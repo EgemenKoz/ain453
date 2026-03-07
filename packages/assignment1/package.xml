@@ -1,0 +1,11 @@
+<package>
+  <name>assignment1</name>
+  <version>0.0.1</version>
+  <description>
+  Stop the robot at 10cm away from the block.
+  </description>
+  <maintainer email="egemen06292@gmail.com">Egemen Kozanli</maintainer>
+  <license>None</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+</package>
