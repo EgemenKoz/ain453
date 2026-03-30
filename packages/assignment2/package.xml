@@ -1,0 +1,11 @@
+<package>
+  <name>assignment2</name>
+  <version>0.0.1</version>
+  <description>
+  ArUco-based localization on the Duckiebot.
+  </description>
+  <maintainer email="egemen06292@gmail.com">Egemen Kozanli</maintainer>
+  <license>None</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+</package>
