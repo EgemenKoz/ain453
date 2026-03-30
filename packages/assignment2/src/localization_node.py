@@ -1,0 +1,141 @@
+"""
+localization_node.py – Main DTROS node for ArUco-based localisation.
+
+Wires together calibration, odometry, ArUco detection, pose estimation,
+and visualisation into a single ROS node.
+"""
+
+import math
+import os
+
+import cv2
+import numpy as np
+import rospy
+from cv_bridge import CvBridge
+from duckietown.dtros import DTROS, NodeType
+from duckietown_msgs.msg import WheelEncoderStamped
+from sensor_msgs.msg import CameraInfo, CompressedImage
+
+from aruco_detector import ArucoDetector
+from calibration import CameraCalibration
+from config import PUBLISH_RATE_HZ
+from odometry import WheelOdometry
+from pose_estimator import PoseEstimator
+from visualizer import Visualizer
+
+
+class ArUcoLocalizationNode(DTROS):
+    def __init__(self, node_name: str):
+        super().__init__(node_name=node_name, node_type=NodeType.GENERIC)
+
+        self._vehicle = os.environ.get("VEHICLE_NAME", "")
+        self._bridge = CvBridge()
+
+        # Sub-components
+        self._calib = CameraCalibration(self._vehicle)
+        self._odom = WheelOdometry()
+        self._detector = ArucoDetector()
+
+        # World-frame robot pose
+        self._x: float = 0.0
+        self._y: float = 0.0
+        self._theta: float = 0.0
+        self._pose_source: str = "odometry"
+
+        # Latest annotated camera frame for visualisation
+        self._camera_img = None
+
+        # ROS topic prefix
+        prefix = f"/{self._vehicle}" if self._vehicle else ""
+
+        # ── Subscribers ───────────────────────────────────────────────────────
+        rospy.Subscriber(
+            f"{prefix}/camera_node/image/compressed",
+            CompressedImage,
+            self._image_cb,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            f"{prefix}/camera_node/camera_info",
+            CameraInfo,
+            self._calib.update_from_camera_info,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            f"{prefix}/left_wheel_encoder_node/tick",
+            WheelEncoderStamped,
+            lambda msg: self._odom.update_left(msg.data),
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            f"{prefix}/right_wheel_encoder_node/tick",
+            WheelEncoderStamped,
+            lambda msg: self._odom.update_right(msg.data),
+            queue_size=1,
+        )
+
+        # ── Publisher + visualisation timer ──────────────────────────────────
+        vis_pub = rospy.Publisher(
+            f"{prefix}/assignment2/visualization/compressed",
+            CompressedImage,
+            queue_size=1,
+        )
+        self._vis = Visualizer(vis_pub)
+
+        rospy.Timer(
+            rospy.Duration(1.0 / PUBLISH_RATE_HZ),
+            self._vis_timer_cb,
+        )
+
+        rospy.loginfo("[ArUcoLoc] Node ready. Waiting for camera feed...")
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _image_cb(self, msg: CompressedImage) -> None:
+        # Decode compressed JPEG
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            rospy.logwarn_throttle(5.0, "[ArUcoLoc] Failed to decode image.")
+            return
+
+        # Always integrate odometry (even without camera calibration)
+        d_center, d_theta = self._odom.compute_delta()
+        self._x += d_center * math.cos(self._theta + d_theta / 2.0)
+        self._y += d_center * math.sin(self._theta + d_theta / 2.0)
+        self._theta += d_theta
+
+        if not self._calib.is_ready:
+            self._camera_img = img
+            return
+
+        # Undistort
+        h, w = img.shape[:2]
+        new_K, _ = cv2.getOptimalNewCameraMatrix(
+            self._calib.K, self._calib.D, (w, h), alpha=1, newImgSize=(w, h)
+        )
+        undistorted = cv2.undistort(img, self._calib.K, self._calib.D, None, new_K)
+
+        # ArUco detection + annotation (draws on undistorted in-place)
+        tag_id, rvec, tvec = self._detector.detect_and_annotate(undistorted, new_K)
+
+        if tag_id is not None:
+            # High-accuracy ArUco correction
+            self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
+            self._pose_source = "aruco"
+            # Reset odometry baseline to avoid double-counting
+            self._odom.reset_to_current()
+        else:
+            self._pose_source = "odometry"
+
+        self._camera_img = undistorted
+
+    def _vis_timer_cb(self, _event) -> None:
+        self._vis.publish(
+            self._camera_img,
+            self._x,
+            self._y,
+            self._theta,
+            self._pose_source,
+        )
