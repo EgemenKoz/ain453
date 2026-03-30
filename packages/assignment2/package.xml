@@ -1,4 +1,4 @@
-<package>
+<package format="2">
   <name>assignment2</name>
   <version>0.0.1</version>
   <description>
@@ -11,17 +11,10 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
-  <!-- ROS runtime dependencies -->
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>tf</depend>
-
-  <!-- Duckietown-specific messages -->
   <depend>duckietown_msgs</depend>
-
-  <!-- Python system packages -->
-  <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-yaml</exec_depend>
 </package>
