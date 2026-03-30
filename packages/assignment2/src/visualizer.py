@@ -34,6 +34,7 @@ _COLOUR_ODOM = (0, 100, 255)
 class Visualizer:
     def __init__(self, publisher: rospy.Publisher):
         self._pub = publisher
+        self.last_frame = None
 
     def publish(
         self,
@@ -48,6 +49,7 @@ class Visualizer:
         map_panel = self._map_panel(robot_x, robot_y, robot_theta, pose_source)
 
         vis = np.vstack([cam_panel, map_panel])
+        self.last_frame = vis
 
         msg = CompressedImage()
         msg.header.stamp = rospy.Time.now()

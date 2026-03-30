@@ -9,7 +9,7 @@ import cv2
 
 # ── ArUco ────────────────────────────────────────────────────────────────────
 
-ARUCO_DICT_TYPE = cv2.aruco.DICT_4X4_50
+ARUCO_DICT_TYPE = cv2.aruco.DICT_5X5_250
 MARKER_SIZE_M = 0.065  # physical side length of the printed tags (metres)
 
 # Known tag poses on the map: tag_id → (x_m, y_m, yaw_rad) in world frame.

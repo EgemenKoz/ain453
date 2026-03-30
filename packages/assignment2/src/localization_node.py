@@ -139,3 +139,9 @@ class ArUcoLocalizationNode(DTROS):
             self._theta,
             self._pose_source,
         )
+
+        # Local display window (works when a desktop/display is available)
+        vis_img = self._vis.last_frame
+        if vis_img is not None:
+            cv2.imshow("ArUco Localization", vis_img)
+            cv2.waitKey(1)

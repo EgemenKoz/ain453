@@ -35,12 +35,18 @@ def _make_detector():
         # OpenCV >= 4.7
         aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT_TYPE)
         params = cv2.aruco.DetectorParameters()
+        params.minMarkerPerimeterRate = 0.05
+        params.errorCorrectionRate = 0.5
+        params.polygonalApproxAccuracyRate = 0.03
         detector = cv2.aruco.ArucoDetector(aruco_dict, params)
         return aruco_dict, params, detector, True
     except AttributeError:
         # OpenCV < 4.7
         aruco_dict = cv2.aruco.Dictionary_get(ARUCO_DICT_TYPE)
         params = cv2.aruco.DetectorParameters_create()
+        params.minMarkerPerimeterRate = 0.05
+        params.errorCorrectionRate = 0.5
+        params.polygonalApproxAccuracyRate = 0.03
         return aruco_dict, params, None, False
 
 
