@@ -7,16 +7,17 @@ dead-reckoning chain without accumulated error.
 """
 
 import math
+from typing import Optional
 
 from config import WHEEL_RADIUS_M, WHEEL_BASELINE_M, TICKS_PER_REV
 
 
 class WheelOdometry:
     def __init__(self):
-        self._left_ticks: int | None = None
-        self._right_ticks: int | None = None
-        self._left_prev: int | None = None
-        self._right_prev: int | None = None
+        self._left_ticks: Optional[int] = None
+        self._right_ticks: Optional[int] = None
+        self._left_prev: Optional[int] = None
+        self._right_prev: Optional[int] = None
 
     # ── Encoder callbacks ─────────────────────────────────────────────────────
 
