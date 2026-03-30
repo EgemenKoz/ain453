@@ -369,8 +369,8 @@ class ArUcoLocalizationNode(DTROS):
         cos_ty = math.cos(tag_yaw)
         sin_ty = math.sin(tag_yaw)
 
-        cam_wx = tag_x + cos_ty * cam_in_marker[2] - sin_ty * cam_in_marker[0]
-        cam_wy = tag_y + sin_ty * cam_in_marker[2] + cos_ty * cam_in_marker[0]
+        cam_wx = tag_x + cos_ty * cam_in_marker[0] - sin_ty * cam_in_marker[2]
+        cam_wy = tag_y + sin_ty * cam_in_marker[0] + cos_ty * cam_in_marker[2]
 
         cam_world_yaw = wrap_to_pi(tag_yaw + math.pi + yaw_cam_to_marker)
 
