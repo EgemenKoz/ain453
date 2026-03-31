@@ -18,7 +18,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage
 
 from aruco_detector import ArucoDetector
 from calibration import CameraCalibration
-from config import PUBLISH_RATE_HZ
+from config import PUBLISH_RATE_HZ, TAG_POSES
 from odometry import WheelOdometry
 from pose_estimator import PoseEstimator
 from visualizer import Visualizer
@@ -50,26 +50,26 @@ class ArUcoLocalizationNode(DTROS):
 
         # ── Subscribers ───────────────────────────────────────────────────────
         rospy.Subscriber(
-            f"{prefix}/camera_node/image/compressed",
+            f"/mouse/camera_node/image/compressed",
             CompressedImage,
             self._image_cb,
             queue_size=1,
             buff_size=2 ** 24,
         )
         rospy.Subscriber(
-            f"{prefix}/camera_node/camera_info",
+            f"/mouse/camera_node/camera_info",
             CameraInfo,
             self._calib.update_from_camera_info,
             queue_size=1,
         )
         rospy.Subscriber(
-            f"{prefix}/left_wheel_encoder_node/tick",
+            f"/mouse/left_wheel_encoder_node/tick",
             WheelEncoderStamped,
             lambda msg: self._odom.update_left(msg.data),
             queue_size=1,
         )
         rospy.Subscriber(
-            f"{prefix}/right_wheel_encoder_node/tick",
+            f"/mouse/right_wheel_encoder_node/tick",
             WheelEncoderStamped,
             lambda msg: self._odom.update_right(msg.data),
             queue_size=1,
@@ -77,7 +77,7 @@ class ArUcoLocalizationNode(DTROS):
 
         # ── Publisher + visualisation timer ──────────────────────────────────
         vis_pub = rospy.Publisher(
-            f"{prefix}/assignment2/visualization/compressed",
+            f"/mouse/assignment2/visualization/compressed",
             CompressedImage,
             queue_size=1,
         )
@@ -94,8 +94,15 @@ class ArUcoLocalizationNode(DTROS):
 
     def _image_cb(self, msg: CompressedImage) -> None:
         # Decode compressed JPEG
+        # rospy.loginfo_throttle(2.0, "[ArUcoLoc] Image callback triggered.")  # EKLE
+
         np_arr = np.frombuffer(msg.data, np.uint8)
+        # rospy.loginfo_throttle(2.0, "[ArUcoLoc] np_arr len=%d", len(np_arr))
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            rospy.logwarn_throttle(2.0, "[ArUcoLoc] imdecode returned None!")
+            return
+        # rospy.loginfo_throttle(2.0, "[ArUcoLoc] img shape=%s", str(img.shape))
         if img is None:
             rospy.logwarn_throttle(5.0, "[ArUcoLoc] Failed to decode image.")
             return
@@ -121,11 +128,22 @@ class ArUcoLocalizationNode(DTROS):
         tag_id, rvec, tvec = self._detector.detect_and_annotate(undistorted, new_K)
 
         if tag_id is not None:
-            # High-accuracy ArUco correction
+            if tag_id not in TAG_POSES:
+                # First time seeing this tag: register its world pose from odometry
+                tx, ty, tyaw = PoseEstimator.tag_from_robot(
+                    self._x, self._y, self._theta, rvec, tvec
+                )
+                TAG_POSES[tag_id] = (tx, ty, tyaw)
+                rospy.loginfo(
+                    "[ArUcoLoc] Registered tag %d at (%.2f, %.2f, %.1f°)",
+                    tag_id, tx, ty, math.degrees(tyaw),
+                )
+            # ArUco correction using known tag pose
             self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
             self._pose_source = "aruco"
-            # Reset odometry baseline to avoid double-counting
             self._odom.reset_to_current()
+            rospy.loginfo_throttle(2.0, "[ArUcoLoc] ID %d  x=%.2f y=%.2f yaw=%.0f°",
+                                   tag_id, self._x, self._y, math.degrees(self._theta))
         else:
             self._pose_source = "odometry"
 
@@ -141,7 +159,7 @@ class ArUcoLocalizationNode(DTROS):
         )
 
         # Local display window (works when a desktop/display is available)
-        vis_img = self._vis.last_frame
-        if vis_img is not None:
-            cv2.imshow("ArUco Localization", vis_img)
-            cv2.waitKey(1)
+        # vis_img = self._vis.last_frame
+        # if vis_img is not None:
+        #     cv2.imshow("ArUco Localization", vis_img)
+        #     cv2.waitKey(1)

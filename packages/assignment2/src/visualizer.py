@@ -56,7 +56,7 @@ class Visualizer:
         msg.format = "jpeg"
         ok, buf = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if ok:
-            msg.data = np.array(buf).tobytes()
+            msg.data = buf.tobytes()
             self._pub.publish(msg)
 
     # ── Panel builders ────────────────────────────────────────────────────────

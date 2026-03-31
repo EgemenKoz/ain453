@@ -64,3 +64,30 @@ class PoseEstimator:
         world_yaw = tag_yaw + math.pi + yaw_cam_to_marker
 
         return wx, wy, world_yaw
+
+    @staticmethod
+    def tag_from_robot(
+        robot_x: float, robot_y: float, robot_theta: float,
+        rvec: np.ndarray, tvec: np.ndarray,
+    ) -> tuple:
+        """
+        Estimate the world-frame pose of a tag from the robot's current pose.
+
+        Inverse of from_tag(): used to register a newly seen tag into TAG_POSES.
+
+        Returns
+        -------
+        (tag_x, tag_y, tag_yaw) in world frame
+        """
+        R_cm, _ = cv2.Rodrigues(rvec)
+        cam_in_marker = (-R_cm.T @ tvec).flatten()
+        yaw_cam_to_marker = math.atan2(-R_cm[2, 0], R_cm[2, 2])
+
+        tag_yaw = robot_theta - math.pi - yaw_cam_to_marker
+        cos_ty = math.cos(tag_yaw)
+        sin_ty = math.sin(tag_yaw)
+
+        tag_x = robot_x - cos_ty * cam_in_marker[2] + sin_ty * cam_in_marker[0]
+        tag_y = robot_y - sin_ty * cam_in_marker[2] - cos_ty * cam_in_marker[0]
+
+        return tag_x, tag_y, tag_yaw

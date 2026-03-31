@@ -14,7 +14,7 @@ import numpy as np
 import cv2
 import rospy
 
-from config import ARUCO_DICT_TYPE, MARKER_SIZE_M, TAG_POSES
+from config import ARUCO_DICT_TYPE, MARKER_SIZE_M
 
 # 3-D corners of a flat marker (marker frame, z=0)
 #   top-left, top-right, bottom-right, bottom-left
@@ -139,7 +139,7 @@ class ArucoDetector:
             )
 
             dist = float(np.linalg.norm(tvec))
-            if tag_id in TAG_POSES and dist < best_dist:
+            if dist < best_dist:
                 best_dist = dist
                 best_tag_id = tag_id
                 best_rvec = rvec
