@@ -8,6 +8,7 @@ Tries (in order):
 """
 
 import os
+from typing import Optional
 
 import numpy as np
 import rospy
@@ -17,8 +18,8 @@ from sensor_msgs.msg import CameraInfo
 
 class CameraCalibration:
     def __init__(self, vehicle_name: str):
-        self._K: np.ndarray | None = None
-        self._D: np.ndarray | None = None
+        self._K: Optional[np.ndarray] = None
+        self._D: Optional[np.ndarray] = None
         self._ready = False
         self._load_from_file(vehicle_name)
 

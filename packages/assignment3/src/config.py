@@ -77,8 +77,10 @@ ALIGN_THRESHOLD_RAD = 0.25
 
 # Forward speed is scaled by distance; this factor sets the ramp:
 #   speed = min(LINEAR_SPEED, forward_distance * SLOWDOWN_FACTOR)
-# At PROXIMITY_THRESHOLD_M distance → speed ≈ 0.30 * 0.67 = 0.20 m/s (clamped).
-SLOWDOWN_FACTOR = 0.67
+# Slowdown kicks in when forward_distance < LINEAR_SPEED / SLOWDOWN_FACTOR.
+# With the values below: 0.20 / 0.40 = 0.50 m  → robot starts slowing at ~0.5 m.
+# At PROXIMITY_THRESHOLD_M (0.30 m): speed = 0.30 * 0.40 = 0.12 m/s (gradual stop).
+SLOWDOWN_FACTOR = 0.40
 
 # Angular speed (rad/s) when rotating to search for a lost tag.
 SEARCH_ANGULAR_SPEED = 0.30

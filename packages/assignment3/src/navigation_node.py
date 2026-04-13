@@ -84,6 +84,9 @@ class PathNavigationNode(DTROS):
         self._detector = ArucoDetector()
         self._controller = NavigationController()
 
+        # Cached optimal camera matrix (computed once on first calibrated frame).
+        self._new_K = None
+
         # ── ROS topics ────────────────────────────────────────────────────────
         prefix = f"/{self._vehicle}" if self._vehicle else ""
 
@@ -101,6 +104,11 @@ class PathNavigationNode(DTROS):
             queue_size=1,
         )
 
+        # geometry_msgs/Twist on cmd_vel is the ROS-standard interface.
+        # On Duckiebot, verify that a cmd_vel → Twist2DStamped bridge is running
+        # (rostopic list | grep cmd).  If not, change the topic to
+        # f"{prefix}/car_cmd_switch_node/cmd" and the message type to
+        # duckietown_msgs/Twist2DStamped, mapping linear.x → v, angular.z → omega.
         self._cmd_pub = rospy.Publisher(
             f"{prefix}/cmd_vel",
             Twist,
@@ -125,6 +133,11 @@ class PathNavigationNode(DTROS):
     @property
     def _target_node(self) -> int:
         """The ID of the node the robot is currently heading toward."""
+        if self._target_idx >= len(self._path):
+            raise IndexError(
+                f"_target_idx={self._target_idx} is out of range for path "
+                f"of length {len(self._path)}. This is a bug."
+            )
         return self._path[self._target_idx]
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
@@ -149,9 +162,11 @@ class PathNavigationNode(DTROS):
             return
 
         h, w = img.shape[:2]
-        new_K, _ = cv2.getOptimalNewCameraMatrix(
-            self._calib.K, self._calib.D, (w, h), alpha=1, newImgSize=(w, h)
-        )
+        if self._new_K is None:
+            self._new_K, _ = cv2.getOptimalNewCameraMatrix(
+                self._calib.K, self._calib.D, (w, h), alpha=1, newImgSize=(w, h)
+            )
+        new_K = self._new_K
         undistorted = cv2.undistort(img, self._calib.K, self._calib.D, None, new_K)
 
         # ── ARTag detection ──────────────────────────────────────────────────
