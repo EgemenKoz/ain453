@@ -138,12 +138,13 @@ class ArUcoLocalizationNode(DTROS):
                     "[ArUcoLoc] Registered tag %d at (%.2f, %.2f, %.1f°)",
                     tag_id, tx, ty, math.degrees(tyaw),
                 )
-            # ArUco correction using known tag pose
-            self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
-            self._pose_source = "aruco"
-            self._odom.reset_to_current()
-            rospy.loginfo_throttle(2.0, "[ArUcoLoc] ID %d  x=%.2f y=%.2f yaw=%.0f°",
-                                   tag_id, self._x, self._y, math.degrees(self._theta))
+            else:
+                # Subsequent sightings: correct pose from known tag
+                self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
+                self._pose_source = "aruco"
+                self._odom.reset_to_current()
+                rospy.loginfo_throttle(2.0, "[ArUcoLoc] ID %d  x=%.2f y=%.2f yaw=%.0f°",
+                                       tag_id, self._x, self._y, math.degrees(self._theta))
         else:
             self._pose_source = "odometry"
 

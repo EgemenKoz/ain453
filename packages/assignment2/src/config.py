@@ -14,14 +14,7 @@ MARKER_SIZE_M = 0.0675  # physical side length of the printed tags (metres)
 
 # Known tag poses on the map: tag_id → (x_m, y_m, yaw_rad) in world frame.
 # Update these to match your actual lab / map layout.
-TAG_POSES = {
-    0: (0.50, 0.00, 0.0),
-    1: (1.00, 0.00, 0.0),
-    2: (1.50, 0.00, 0.0),
-    3: (0.50, 1.00, math.pi),
-    4: (1.00, 1.00, math.pi),
-    5: (1.50, 1.00, math.pi),
-}
+TAG_POSES = {}  # populated at runtime when tags are first seen
 
 # ── Duckiebot differential-drive parameters ──────────────────────────────────
 
@@ -33,9 +26,9 @@ TICKS_PER_REV = 135         # encoder ticks per full wheel revolution (DB21)
 
 MAP_WIDTH_PX = 800          # full map canvas width  (pixels)
 MAP_HEIGHT_PX = 600         # full map canvas height (pixels)
-MAP_SCALE = 300             # pixels per metre
-MAP_ORIGIN_X = 50           # pixel x-offset for world x = 0
-MAP_ORIGIN_Y = 500          # pixel y-offset for world y = 0
+MAP_SCALE = 150             # pixels per metre
+MAP_ORIGIN_X = 400          # pixel x-offset for world x = 0  (centred)
+MAP_ORIGIN_Y = 300          # pixel y-offset for world y = 0  (centred)
 
 VIS_PANEL_W = 400           # each sub-panel width in the published image
 VIS_PANEL_H = 300           # each sub-panel height

@@ -33,6 +33,7 @@ from config import (
     LINEAR_SPEED,
     SEARCH_ANGULAR_SPEED,
     SLOWDOWN_FACTOR,
+    TURN_SPEED_RAD_S,
 )
 
 
@@ -76,6 +77,28 @@ class NavigationController:
             speed *= math.cos(heading_error)
             cmd.linear.x = max(speed, 0.0)
 
+        return cmd
+
+    def turn_left_cmd(self) -> Twist:
+        """
+        Rotate in place counter-clockwise (left turn, 90°).
+
+        angular.z > 0 → CCW (left) in ROS convention.
+        Run this for TURN_90_DURATION_S seconds for a full 90° turn.
+        """
+        cmd = Twist()
+        cmd.angular.z = TURN_SPEED_RAD_S
+        return cmd
+
+    def turn_right_cmd(self) -> Twist:
+        """
+        Rotate in place clockwise (right turn, 90°).
+
+        angular.z < 0 → CW (right) in ROS convention.
+        Run this for TURN_90_DURATION_S seconds for a full 90° turn.
+        """
+        cmd = Twist()
+        cmd.angular.z = -TURN_SPEED_RAD_S
         return cmd
 
     def search_cmd(self) -> Twist:

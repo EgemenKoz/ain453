@@ -93,3 +93,15 @@ TAG_LOST_PATIENCE_FRAMES = 5
 # control; this timer only acts as a watchdog to stop the robot when no image
 # has been received recently.
 WATCHDOG_HZ = 10
+
+# ── Discrete grid actions ─────────────────────────────────────────────────────
+# Initial heading of the robot when it starts at START_NODE.
+# Encoding: 0 = EAST (+x), 1 = NORTH (+y), 2 = WEST (-x), 3 = SOUTH (-y)
+INITIAL_HEADING = 0   # robot starts facing EAST
+
+# Angular speed (rad/s) used during in-place 90° turns.
+TURN_SPEED_RAD_S = 0.6
+
+# Duration (s) for a 90° turn (open-loop).  Tune on real hardware.
+# Default ≈ (π/2) / TURN_SPEED_RAD_S = 1.571 / 0.6 ≈ 2.62 s
+TURN_90_DURATION_S = 2.62

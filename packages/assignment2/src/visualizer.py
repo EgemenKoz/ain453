@@ -23,6 +23,7 @@ from sensor_msgs.msg import CompressedImage
 from config import (
     TAG_POSES,
     MAP_WIDTH_PX, MAP_HEIGHT_PX,
+    MAP_SCALE, MAP_ORIGIN_X, MAP_ORIGIN_Y,
     VIS_PANEL_W, VIS_PANEL_H,
     world_to_pixel,
 )
@@ -48,7 +49,7 @@ class Visualizer:
         cam_panel = self._camera_panel(camera_img)
         map_panel = self._map_panel(robot_x, robot_y, robot_theta, pose_source)
 
-        vis = np.vstack([cam_panel, map_panel])
+        vis = np.hstack([cam_panel, map_panel])
         self.last_frame = vis
 
         msg = CompressedImage()
@@ -76,15 +77,18 @@ class Visualizer:
     ) -> np.ndarray:
         panel = np.full((VIS_PANEL_H, VIS_PANEL_W, 3), 235, dtype=np.uint8)
 
-        # Draw a simple grid (every 0.5 m)
-        for gx in range(0, int(MAP_WIDTH_PX // (0.5 * 300)) + 1):
-            world_x = gx * 0.5
-            px, _ = world_to_pixel(world_x, 0.0)
+        # Draw a simple grid (every 0.5 m) over the full visible world range
+        GRID_STEP = 0.5
+        x_min = int(math.floor(-MAP_ORIGIN_X / MAP_SCALE / GRID_STEP))
+        x_max = int(math.ceil((MAP_WIDTH_PX - MAP_ORIGIN_X) / MAP_SCALE / GRID_STEP))
+        y_min = int(math.floor(-(MAP_HEIGHT_PX - MAP_ORIGIN_Y) / MAP_SCALE / GRID_STEP))
+        y_max = int(math.ceil(MAP_ORIGIN_Y / MAP_SCALE / GRID_STEP))
+        for gx in range(x_min, x_max + 1):
+            px, _ = world_to_pixel(gx * GRID_STEP, 0.0)
             px_s = int(px * VIS_PANEL_W / MAP_WIDTH_PX)
             cv2.line(panel, (px_s, 0), (px_s, VIS_PANEL_H), (210, 210, 210), 1)
-        for gy in range(0, int(MAP_HEIGHT_PX // (0.5 * 300)) + 1):
-            world_y = gy * 0.5
-            _, py = world_to_pixel(0.0, world_y)
+        for gy in range(y_min, y_max + 1):
+            _, py = world_to_pixel(0.0, gy * GRID_STEP)
             py_s = int(py * VIS_PANEL_H / MAP_HEIGHT_PX)
             cv2.line(panel, (0, py_s), (VIS_PANEL_W, py_s), (210, 210, 210), 1)
 
@@ -114,8 +118,8 @@ class Visualizer:
         cv2.circle(panel, (rpx_s, rpy_s), 9, (0, 0, 0), 1)  # outline
 
         arrow_len = 22
-        ax = int(rpx_s + arrow_len * math.cos(theta))
-        ay = int(rpy_s - arrow_len * math.sin(theta))
+        ax = int(rpx_s - arrow_len * math.cos(theta))
+        ay = int(rpy_s + arrow_len * math.sin(theta))
         cv2.arrowedLine(panel, (rpx_s, rpy_s), (ax, ay), colour, 2, tipLength=0.35)
 
         # Pose text
