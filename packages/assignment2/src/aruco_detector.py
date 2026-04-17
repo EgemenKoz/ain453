@@ -115,15 +115,12 @@ class ArucoDetector:
             )
 
         if ids is None or len(ids) == 0:
-            return None, None, None
+            return []
 
         # Draw marker outlines and IDs
         cv2.aruco.drawDetectedMarkers(img, corners, ids)
 
-        best_tag_id = None
-        best_dist = float("inf")
-        best_rvec = None
-        best_tvec = None
+        detections = []
 
         for i, tag_id in enumerate(ids.flatten()):
             rvec, tvec = _estimate_pose_single(corners[i], new_K)
@@ -138,11 +135,6 @@ class ArucoDetector:
                 tag_id, tvec[0], tvec[1], tvec[2], float(np.linalg.norm(tvec)),
             )
 
-            dist = float(np.linalg.norm(tvec))
-            if dist < best_dist:
-                best_dist = dist
-                best_tag_id = tag_id
-                best_rvec = rvec
-                best_tvec = tvec
+            detections.append((tag_id, rvec, tvec))
 
-        return best_tag_id, best_rvec, best_tvec
+        return detections

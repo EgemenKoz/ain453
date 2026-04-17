@@ -14,14 +14,7 @@ MARKER_SIZE_M = 0.0675  # physical side length of the printed tags (metres)
 
 # Known tag poses on the map: tag_id → (x_m, y_m, yaw_rad) in world frame.
 # Update these to match your actual lab / map layout.
-TAG_POSES = {
-    0: (0.50, 0.00, 0.0),
-    1: (1.00, 0.00, 0.0),
-    2: (1.50, 0.00, 0.0),
-    3: (0.50, 1.00, math.pi),
-    4: (1.00, 1.00, math.pi),
-    5: (1.50, 1.00, math.pi),
-}
+TAG_POSES = {}
 
 # ── Duckiebot differential-drive parameters ──────────────────────────────────
 

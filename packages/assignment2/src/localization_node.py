@@ -50,26 +50,26 @@ class ArUcoLocalizationNode(DTROS):
 
         # ── Subscribers ───────────────────────────────────────────────────────
         rospy.Subscriber(
-            f"/mouse/camera_node/image/compressed",
+            f"/chicken/camera_node/image/compressed",
             CompressedImage,
             self._image_cb,
             queue_size=1,
             buff_size=2 ** 24,
         )
         rospy.Subscriber(
-            f"/mouse/camera_node/camera_info",
+            f"/chicken/camera_node/camera_info",
             CameraInfo,
             self._calib.update_from_camera_info,
             queue_size=1,
         )
         rospy.Subscriber(
-            f"/mouse/left_wheel_encoder_node/tick",
+            f"/chicken/left_wheel_encoder_node/tick",
             WheelEncoderStamped,
             lambda msg: self._odom.update_left(msg.data),
             queue_size=1,
         )
         rospy.Subscriber(
-            f"/mouse/right_wheel_encoder_node/tick",
+            f"/chicken/right_wheel_encoder_node/tick",
             WheelEncoderStamped,
             lambda msg: self._odom.update_right(msg.data),
             queue_size=1,
@@ -77,7 +77,7 @@ class ArUcoLocalizationNode(DTROS):
 
         # ── Publisher + visualisation timer ──────────────────────────────────
         vis_pub = rospy.Publisher(
-            f"/mouse/assignment2/visualization/compressed",
+            f"/chicken/assignment2/visualization/compressed",
             CompressedImage,
             queue_size=1,
         )
@@ -125,25 +125,36 @@ class ArUcoLocalizationNode(DTROS):
         undistorted = cv2.undistort(img, self._calib.K, self._calib.D, None, new_K)
 
         # ArUco detection + annotation (draws on undistorted in-place)
-        tag_id, rvec, tvec = self._detector.detect_and_annotate(undistorted, new_K)
+        detections = self._detector.detect_and_annotate(undistorted, new_K)
 
-        if tag_id is not None:
-            if tag_id not in TAG_POSES:
-                # First time seeing this tag: register its world pose from odometry
-                tx, ty, tyaw = PoseEstimator.tag_from_robot(
-                    self._x, self._y, self._theta, rvec, tvec
-                )
-                TAG_POSES[tag_id] = (tx, ty, tyaw)
-                rospy.loginfo(
-                    "[ArUcoLoc] Registered tag %d at (%.2f, %.2f, %.1f°)",
-                    tag_id, tx, ty, math.degrees(tyaw),
-                )
-            # ArUco correction using known tag pose
-            self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
-            self._pose_source = "aruco"
-            self._odom.reset_to_current()
-            rospy.loginfo_throttle(2.0, "[ArUcoLoc] ID %d  x=%.2f y=%.2f yaw=%.0f°",
-                                   tag_id, self._x, self._y, math.degrees(self._theta))
+        if detections:
+            best_dist = float('inf')
+            best_det = None
+            for tag_id, rvec, tvec in detections:
+                if tag_id not in TAG_POSES:
+                    # First time seeing this tag: register its world pose from odometry
+                    tx, ty, tyaw = PoseEstimator.tag_from_robot(
+                        self._x, self._y, self._theta, rvec, tvec
+                    )
+                    TAG_POSES[tag_id] = (tx, ty, tyaw)
+                    rospy.loginfo(
+                        "[ArUcoLoc] Registered tag %d at (%.2f, %.2f, %.1f°)",
+                        tag_id, tx, ty, math.degrees(tyaw),
+                    )
+                
+                dist = np.linalg.norm(tvec)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_det = (tag_id, rvec, tvec)
+
+            # ArUco correction using known tag pose (from closest tag)
+            if best_det:
+                tag_id, rvec, tvec = best_det
+                self._x, self._y, self._theta = PoseEstimator.from_tag(tag_id, rvec, tvec)
+                self._pose_source = "aruco"
+                self._odom.reset_to_current()
+                rospy.loginfo_throttle(2.0, "[ArUcoLoc] ID %d  x=%.2f y=%.2f yaw=%.0f°",
+                                       tag_id, self._x, self._y, math.degrees(self._theta))
         else:
             self._pose_source = "odometry"
 

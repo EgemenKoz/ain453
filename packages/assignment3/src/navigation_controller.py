@@ -25,7 +25,7 @@ import math
 from typing import Tuple
 
 import numpy as np
-from geometry_msgs.msg import Twist
+from duckietown_msgs.msg import Twist2DStamped
 
 from config import (
     ALIGN_THRESHOLD_RAD,
@@ -41,9 +41,9 @@ class NavigationController:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def compute_cmd_vel(self, tvec: np.ndarray) -> Twist:
+    def compute_cmd_vel(self, tvec: np.ndarray) -> Twist2DStamped:
         """
-        Compute a Twist command to drive the robot toward the detected tag.
+        Compute a Twist2DStamped command to drive the robot toward the detected tag.
 
         Parameters
         ----------
@@ -53,47 +53,51 @@ class NavigationController:
 
         Returns
         -------
-        geometry_msgs/Twist
+        duckietown_msgs/Twist2DStamped
         """
         forward = float(tvec[2])         # depth (z)
         lateral = float(tvec[0])         # horizontal offset (x)
 
         # Heading error: positive means tag is to the right
-        #   → angular.z should be negative (turn right = CW in ROS)
+        #   → omega should be negative (turn right = CW in ROS)
         heading_error = math.atan2(lateral, max(forward, 0.01))
-        angular_z = -ANGULAR_GAIN * heading_error
+        omega = -ANGULAR_GAIN * heading_error
 
-        cmd = Twist()
-        cmd.angular.z = angular_z
+        cmd = Twist2DStamped()
+        cmd.omega = omega
 
         if abs(heading_error) > ALIGN_THRESHOLD_RAD:
             # Rotate in place first – do not advance until roughly aligned.
-            cmd.linear.x = 0.0
+            cmd.v = 0.0
         else:
             # Scale speed by distance (slow down when close).
             speed = min(LINEAR_SPEED, forward * SLOWDOWN_FACTOR)
             # Reduce forward speed proportionally to residual heading error.
             speed *= math.cos(heading_error)
-            cmd.linear.x = max(speed, 0.0)
+            cmd.v = max(speed, 0.0)
 
         return cmd
 
-    def search_cmd(self) -> Twist:
+    def search_cmd(self, direction: float = 1.0) -> Twist2DStamped:
         """
         Rotate in place to scan for a lost or not-yet-visible ARTag.
 
+        Parameters
+        ----------
+        direction : +1.0 for CCW (left), -1.0 for CW (right)
+
         Returns
         -------
-        geometry_msgs/Twist  (linear.x = 0, angular.z = SEARCH_ANGULAR_SPEED)
+        duckietown_msgs/Twist2DStamped  (v = 0, omega = ±SEARCH_ANGULAR_SPEED)
         """
-        cmd = Twist()
-        cmd.angular.z = SEARCH_ANGULAR_SPEED
+        cmd = Twist2DStamped()
+        cmd.omega = SEARCH_ANGULAR_SPEED * direction
         return cmd
 
     @staticmethod
-    def stop_cmd() -> Twist:
-        """Return an all-zero Twist (full stop)."""
-        return Twist()
+    def stop_cmd() -> Twist2DStamped:
+        """Return an all-zero Twist2DStamped (full stop)."""
+        return Twist2DStamped()
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 

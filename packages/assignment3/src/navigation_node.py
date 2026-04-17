@@ -9,25 +9,27 @@ Start-up sequence
 
 State machine
 -------------
-SEARCHING   The robot rotates in place to scan for the target ARTag.
-            Entry: on node arrival OR after TAG_LOST_PATIENCE_FRAMES
-                   consecutive frames without a detection.
+SEARCHING      The robot rotates in place to scan for the target ARTag.
+               Uses heading tracking to decide turn direction.
 
-APPROACHING The target ARTag is visible; the proportional controller
-            drives the robot toward it.
-            Entry: target tag detected while SEARCHING or APPROACHING.
+APPROACHING    The target ARTag is visible; the proportional controller
+               drives the robot toward it.
 
-GOAL_REACHED Robot has reached N15.  Publishes zero velocity and prints
-             "Goal Reached".
+BLIND_FORWARD  Tag disappeared while APPROACHING and last distance was
+               small.  Robot drives straight forward briefly, then
+               declares the node reached.
 
-Localisation
-------------
-Position is determined solely by ARTag detections.  The node tracks which
-path waypoint the robot is heading toward (self._target_idx) and waits for
-the corresponding ARTag (ID == node ID) to be detected within
-PROXIMITY_THRESHOLD_M before advancing to the next waypoint.
+GOAL_REACHED   Robot has reached N15.  Publishes zero velocity.
+
+Heading tracking
+----------------
+The robot's heading (orientation in the grid frame) is estimated from the
+graph: each time the robot travels from node A to node B, the heading is
+set to atan2(By-Ay, Bx-Ax).  This allows the node to compute how much
+the robot must rotate to face the next target.
 """
 
+import math
 import os
 
 import cv2
@@ -35,15 +37,21 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from duckietown.dtros import DTROS, NodeType
-from geometry_msgs.msg import Twist
+from duckietown_msgs.msg import Twist2DStamped
 from sensor_msgs.msg import CameraInfo, CompressedImage
 
 import astar
 from aruco_detector import ArucoDetector
 from calibration import CameraCalibration
 from config import (
+    BLIND_APPROACH_DIST,
+    BLIND_FORWARD_SEC,
+    BLIND_FORWARD_SPEED,
     GOAL_NODE,
+    INITIAL_HEADING_RAD,
+    NODE_COORDS,
     PROXIMITY_THRESHOLD_M,
+    SEARCH_ANGULAR_SPEED,
     START_NODE,
     TAG_LOST_PATIENCE_FRAMES,
     WATCHDOG_HZ,
@@ -51,9 +59,26 @@ from config import (
 from navigation_controller import NavigationController
 
 # Robot states
-_SEARCHING   = "SEARCHING"
-_APPROACHING = "APPROACHING"
-_GOAL_REACHED = "GOAL_REACHED"
+_SEARCHING     = "SEARCHING"
+_APPROACHING   = "APPROACHING"
+_BLIND_FORWARD = "BLIND_FORWARD"
+_GOAL_REACHED  = "GOAL_REACHED"
+
+
+def _normalize_angle(a: float) -> float:
+    """Normalize angle to [-pi, pi]."""
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a < -math.pi:
+        a += 2 * math.pi
+    return a
+
+
+def _direction_between(from_node: int, to_node: int) -> float:
+    """Return the heading (radians) from from_node to to_node in the grid frame."""
+    fx, fy = NODE_COORDS[from_node]
+    tx, ty = NODE_COORDS[to_node]
+    return math.atan2(ty - fy, tx - fx)
 
 
 class PathNavigationNode(DTROS):
@@ -74,10 +99,20 @@ class PathNavigationNode(DTROS):
         rospy.loginfo("[Nav] Path: %s", astar.format_path(self._path))
 
         # _target_idx points to the *next* waypoint the robot is heading to.
-        # The robot is assumed to start exactly at path[0] = N0.
         self._target_idx: int = 1          # heading toward path[1]
         self._state: str = _SEARCHING
         self._tag_lost_frames: int = 0
+        self._last_tvec = None              # last seen tvec of target tag
+        self._last_dist: float = 999.0      # last known distance to target tag
+        self._blind_start = None            # rospy.Time when BLIND_FORWARD began
+
+        # ── Heading tracking ──────────────────────────────────────────────────
+        # Heading = robot's orientation in grid frame (radians).
+        # 0 = facing +x (right), π/2 = facing +y (up)
+        self._heading: float = INITIAL_HEADING_RAD
+
+        # Pre-compute the required turn for each path segment
+        self._log_planned_turns()
 
         # ── Sub-components ────────────────────────────────────────────────────
         self._calib = CameraCalibration(self._vehicle)
@@ -104,14 +139,10 @@ class PathNavigationNode(DTROS):
             queue_size=1,
         )
 
-        # geometry_msgs/Twist on cmd_vel is the ROS-standard interface.
-        # On Duckiebot, verify that a cmd_vel → Twist2DStamped bridge is running
-        # (rostopic list | grep cmd).  If not, change the topic to
-        # f"{prefix}/car_cmd_switch_node/cmd" and the message type to
-        # duckietown_msgs/Twist2DStamped, mapping linear.x → v, angular.z → omega.
+        # Duckiebot uses duckietown_msgs/Twist2DStamped on car_cmd_switch_node/cmd.
         self._cmd_pub = rospy.Publisher(
-            f"{prefix}/cmd_vel",
-            Twist,
+            f"{prefix}/car_cmd_switch_node/cmd",
+            Twist2DStamped,
             queue_size=1,
         )
 
@@ -123,10 +154,30 @@ class PathNavigationNode(DTROS):
         )
 
         rospy.loginfo(
-            "[Nav] Node ready. Heading toward N%d.  State: %s",
+            "[Nav] Node ready. Heading=%.0f°  Target=N%d  State=%s",
+            math.degrees(self._heading),
             self._path[self._target_idx],
             self._state,
         )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _log_planned_turns(self) -> None:
+        """Log the planned heading changes at each waypoint for debugging."""
+        heading = self._heading
+        for i in range(1, len(self._path)):
+            prev = self._path[i - 1]
+            curr = self._path[i]
+            new_heading = _direction_between(prev, curr)
+            turn = _normalize_angle(new_heading - heading)
+            direction_str = "LEFT" if turn > 0 else "RIGHT" if turn < 0 else "STRAIGHT"
+            rospy.loginfo(
+                "[Nav] Plan: N%d→N%d  heading %.0f°→%.0f°  turn %.0f° %s",
+                prev, curr,
+                math.degrees(heading), math.degrees(new_heading),
+                math.degrees(abs(turn)), direction_str,
+            )
+            heading = new_heading
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -140,6 +191,39 @@ class PathNavigationNode(DTROS):
             )
         return self._path[self._target_idx]
 
+    @property
+    def _search_direction(self) -> float:
+        """
+        Decide which way to rotate when searching.
+
+        Uses heading tracking: computes the angle from the robot's current
+        heading to the direction of the next target node.
+
+        Returns +1.0 (CCW/left) or -1.0 (CW/right).
+        """
+        # If we saw the tag recently, turn toward where it was.
+        if self._last_tvec is not None:
+            lateral = float(self._last_tvec[0])
+            if abs(lateral) > 0.005:
+                return 1.0 if lateral < 0 else -1.0
+
+        # Use heading tracking: which direction to face the next node?
+        prev_node = self._path[self._target_idx - 1]
+        tgt_node = self._target_node
+        target_heading = _direction_between(prev_node, tgt_node)
+        turn = _normalize_angle(target_heading - self._heading)
+
+        rospy.loginfo_throttle(
+            2.0,
+            "[Nav] Search direction: heading=%.0f°  target_heading=%.0f°  turn=%.0f°  dir=%s",
+            math.degrees(self._heading),
+            math.degrees(target_heading),
+            math.degrees(turn),
+            "LEFT" if turn > 0 else "RIGHT",
+        )
+
+        return 1.0 if turn >= 0 else -1.0
+
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _image_cb(self, msg: CompressedImage) -> None:
@@ -147,6 +231,22 @@ class PathNavigationNode(DTROS):
 
         if self._state == _GOAL_REACHED:
             self._cmd_pub.publish(self._controller.stop_cmd())
+            return
+
+        # ── BLIND_FORWARD: drive straight, ignore detections ─────────────────
+        if self._state == _BLIND_FORWARD:
+            elapsed = (rospy.Time.now() - self._blind_start).to_sec()
+            if elapsed >= BLIND_FORWARD_SEC:
+                rospy.loginfo(
+                    "[Nav] Blind forward finished (%.1f s). Declaring node reached.",
+                    elapsed,
+                )
+                self._on_node_reached(self._target_node)
+            else:
+                cmd = Twist2DStamped()
+                cmd.v = BLIND_FORWARD_SPEED
+                cmd.omega = 0.0
+                self._cmd_pub.publish(cmd)
             return
 
         # ── Decode + undistort ───────────────────────────────────────────────
@@ -157,8 +257,7 @@ class PathNavigationNode(DTROS):
             return
 
         if not self._calib.is_ready:
-            # Cannot detect tags without calibration; keep searching.
-            self._cmd_pub.publish(self._controller.search_cmd())
+            self._cmd_pub.publish(self._controller.search_cmd(self._search_direction))
             return
 
         h, w = img.shape[:2]
@@ -179,6 +278,8 @@ class PathNavigationNode(DTROS):
             _, tvec = detections[target_id]
             dist = self._controller.distance_m(tvec)
             self._tag_lost_frames = 0
+            self._last_tvec = tvec.copy()
+            self._last_dist = dist
 
             rospy.loginfo_throttle(
                 1.0,
@@ -190,29 +291,71 @@ class PathNavigationNode(DTROS):
                 self._on_node_reached(target_id)
             else:
                 self._state = _APPROACHING
-                self._cmd_pub.publish(self._controller.compute_cmd_vel(tvec))
+                cmd = self._controller.compute_cmd_vel(tvec)
+                rospy.loginfo_throttle(
+                    1.0,
+                    "[Nav] CMD  v=%.3f  omega=%.3f",
+                    cmd.v, cmd.omega,
+                )
+                self._cmd_pub.publish(cmd)
         else:
             # Target tag not visible
             self._tag_lost_frames += 1
 
+            # Wait for patience frames before taking action
             if self._tag_lost_frames >= TAG_LOST_PATIENCE_FRAMES:
-                if self._state != _SEARCHING:
-                    rospy.logwarn(
-                        "[Nav] Target N%d lost for %d frames. Switching to SEARCHING.",
-                        target_id, self._tag_lost_frames,
+                if self._state == _APPROACHING and self._last_dist < BLIND_APPROACH_DIST:
+                    # Tag disappeared while we were close → likely went under camera.
+                    rospy.loginfo(
+                        "[Nav] Tag N%d lost during APPROACHING (last dist=%.3f m). "
+                        "BLIND_FORWARD for %.1f s.",
+                        target_id, self._last_dist, BLIND_FORWARD_SEC,
                     )
-                self._state = _SEARCHING
+                    self._state = _BLIND_FORWARD
+                    self._blind_start = rospy.Time.now()
+                    cmd = Twist2DStamped()
+                    cmd.v = BLIND_FORWARD_SPEED
+                    cmd.omega = 0.0
+                    self._cmd_pub.publish(cmd)
+                    return
+                else:
+                    if self._state != _SEARCHING:
+                        rospy.logwarn(
+                            "[Nav] Target N%d lost for %d frames (dist=%.3f m). "
+                            "Switching to SEARCHING.",
+                            target_id, self._tag_lost_frames, self._last_dist,
+                        )
+                    self._state = _SEARCHING
 
-            # Stop immediately; rotate only when in SEARCHING state.
+            # While waiting for patience or in SEARCHING, act accordingly
             if self._state == _SEARCHING:
-                self._cmd_pub.publish(self._controller.search_cmd())
+                self._cmd_pub.publish(self._controller.search_cmd(self._search_direction))
+            elif self._state == _APPROACHING:
+                # Still within patience window – keep driving toward last known position
+                if self._last_tvec is not None:
+                    # YENİ EKLENEN KISIM: 
+                    # Hedef anlık kaybolduğunda agresif açıyla dönmeye devam etme.
+                    # İleri gitme hızını (v) koru ama dönüşü sıfırla ki dümdüz ilerlesin.
+                    cmd = self._controller.compute_cmd_vel(self._last_tvec)
+                    cmd.omega = 0.0  
+                    self._cmd_pub.publish(cmd)
+                else:
+                    self._cmd_pub.publish(self._controller.stop_cmd())
             else:
                 self._cmd_pub.publish(self._controller.stop_cmd())
 
     def _on_node_reached(self, node_id: int) -> None:
         """Handle arrival at a waypoint node."""
-        rospy.loginfo("[Nav] Reached N%d.", node_id)
+        rospy.loginfo("[Nav] ✓ Reached N%d.", node_id)
         self._cmd_pub.publish(self._controller.stop_cmd())
+
+        # Update heading: direction of travel from previous node to this one
+        prev_node = self._path[self._target_idx - 1]
+        self._heading = _direction_between(prev_node, node_id)
+        rospy.loginfo(
+            "[Nav] Heading updated to %.0f° (from N%d→N%d)",
+            math.degrees(self._heading), prev_node, node_id,
+        )
 
         if node_id == GOAL_NODE:
             self._state = _GOAL_REACHED
@@ -224,14 +367,23 @@ class PathNavigationNode(DTROS):
             self._target_idx += 1
             self._state = _SEARCHING
             self._tag_lost_frames = 0
+            self._last_tvec = None
+            self._last_dist = 999.0
+
+            # Log what turn is needed for the next target
+            next_node = self._target_node
+            target_heading = _direction_between(node_id, next_node)
+            turn = _normalize_angle(target_heading - self._heading)
+            direction_str = "LEFT" if turn > 0 else "RIGHT" if turn < 0 else "STRAIGHT"
+
             rospy.loginfo(
-                "[Nav] Next target: N%d.  State: SEARCHING",
-                self._target_node,
+                "[Nav] Next: N%d  need to turn %.0f° %s  then search.",
+                next_node, math.degrees(abs(turn)), direction_str,
             )
 
     def _watchdog_cb(self, _event) -> None:
         """Stop the robot if no camera image has arrived for >1 second."""
-        if self._state == _GOAL_REACHED:
+        if self._state in (_GOAL_REACHED, _BLIND_FORWARD):
             return
         elapsed = (rospy.Time.now() - self._last_image_stamp).to_sec()
         if elapsed > 1.0:
