@@ -276,7 +276,10 @@ class PathNavigationNode(DTROS):
 
         if target_id in detections:
             _, tvec = detections[target_id]
-            dist = self._controller.distance_m(tvec)
+            # Use forward distance (tvec[2]) only — camera height is part of
+            # norm(tvec) and would prevent the threshold from ever triggering
+            # for floor-mounted markers.
+            dist = float(abs(tvec[2]))
             self._tag_lost_frames = 0
             self._last_tvec = tvec.copy()
             self._last_dist = dist

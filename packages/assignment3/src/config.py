@@ -64,7 +64,9 @@ MARKER_SIZE_M    = 0.0675   # physical side length of the printed tags (metres)
 
 # ── Navigation ───────────────────────────────────────────────────────────────
 # Distance (metres) from the ARTag at which a node is considered "reached".
-PROXIMITY_THRESHOLD_M = 0.12
+# Uses tvec[2] (forward/depth component only) so camera height is excluded.
+# With 38-40 cm node spacing, 15 cm forward distance = robot is right on the tag.
+PROXIMITY_THRESHOLD_M = 0.15
 
 # Maximum forward speed (m/s) sent to cmd_vel.
 LINEAR_SPEED = 0.30
@@ -97,16 +99,16 @@ WATCHDOG_HZ = 10
 # TAG_LOST_PATIENCE_FRAMES while the last known distance was below
 # BLIND_APPROACH_DIST, drive forward blindly for this many seconds before
 # declaring the node as reached.
-BLIND_FORWARD_SEC   = 0.6
+BLIND_FORWARD_SEC   = 0.8
 BLIND_FORWARD_SPEED = 0.18
 
-# If tag was lost while APPROACHING and last known distance was below this
-# threshold, assume the tag went under the camera → enter blind forward.
-# If above this threshold, fall back to SEARCHING.
+# If tag was lost while APPROACHING and last known distance (tvec[2]) was below
+# this threshold, assume the tag went under the camera → enter blind forward.
+# Floor tags disappear from view at ~20-25 cm forward distance.
 BLIND_APPROACH_DIST = 0.30
 
 # ── Heading / orientation ────────────────────────────────────────────────────
 # Initial heading of the robot in the grid frame (radians).
 # 0 = facing +x (right), π/2 = facing +y (up), etc.
-# Robot starts at N0 facing toward N1 (right).
-INITIAL_HEADING_RAD = 0.0
+# Robot starts at N0 facing +y (toward N4/N12 direction in the lab).
+INITIAL_HEADING_RAD = math.pi / 2
