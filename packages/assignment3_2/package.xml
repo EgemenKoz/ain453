@@ -1,0 +1,18 @@
+<package format="2">
+  <name>assignment3_2</name>
+  <version>0.0.1</version>
+  <description>
+    Debug-grade motion primitives for Duckiebot.
+    Provides turn_degrees() and move_forward_cm() with detailed logging
+    to isolate odometry and command issues.
+  </description>
+  <maintainer email="todo@example.com">Student</maintainer>
+  <license>None</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>duckietown_msgs</depend>
+</package>
