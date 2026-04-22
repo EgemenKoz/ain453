@@ -43,6 +43,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage
 import astar
 from aruco_detector import ArucoDetector
 from calibration import CameraCalibration
+from visualizer import GridVisualizer
 from config import (
     BLIND_APPROACH_DIST,
     BLIND_FORWARD_SEC,
@@ -52,6 +53,8 @@ from config import (
     NODE_COORDS,
     PROXIMITY_THRESHOLD_M,
     SEARCH_ANGULAR_SPEED,
+    SEARCH_PULSE_PAUSE_SEC,
+    SEARCH_PULSE_ROTATE_SEC,
     START_NODE,
     TAG_LOST_PATIENCE_FRAMES,
     WATCHDOG_HZ,
@@ -105,6 +108,13 @@ class PathNavigationNode(DTROS):
         self._last_tvec = None              # last seen tvec of target tag
         self._last_dist: float = 999.0      # last known distance to target tag
         self._blind_start = None            # rospy.Time when BLIND_FORWARD began
+        self._visited_nodes: set = {START_NODE}
+        self._detected_this_frame: set = set()
+        self._search_pulse_start = rospy.Time.now()
+        self._search_in_pause: bool = False
+
+        # ── Visualizer ────────────────────────────────────────────────────────
+        self._viz = GridVisualizer(self._path)
 
         # ── Heading tracking ──────────────────────────────────────────────────
         # Heading = robot's orientation in grid frame (radians).
@@ -146,6 +156,14 @@ class PathNavigationNode(DTROS):
             queue_size=1,
         )
 
+        self._viz_pub = rospy.Publisher(
+            f"{prefix}/navigation_viz/compressed",
+            CompressedImage,
+            queue_size=1,
+        )
+        rospy.Timer(rospy.Duration(0.5), self._viz_cb)
+        rospy.on_shutdown(self._shutdown_cb)
+
         # Watchdog: stop the robot if no image arrives for >1 s.
         self._last_image_stamp = rospy.Time.now()
         rospy.Timer(
@@ -163,19 +181,26 @@ class PathNavigationNode(DTROS):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _log_planned_turns(self) -> None:
-        """Log the planned heading changes at each waypoint for debugging."""
+        """Print the planned turn sequence to stdout and ROS log."""
         heading = self._heading
+        print("[Nav] Planned command sequence:")
         for i in range(1, len(self._path)):
             prev = self._path[i - 1]
             curr = self._path[i]
             new_heading = _direction_between(prev, curr)
             turn = _normalize_angle(new_heading - heading)
             direction_str = "LEFT" if turn > 0 else "RIGHT" if turn < 0 else "STRAIGHT"
+            turn_deg = math.degrees(abs(turn))
+            if direction_str == "STRAIGHT":
+                cmd_str = "go STRAIGHT"
+            else:
+                cmd_str = f"turn {direction_str} {turn_deg:.0f}°, then go STRAIGHT"
+            print(f"  N{prev} → N{curr}: {cmd_str}")
             rospy.loginfo(
                 "[Nav] Plan: N%d→N%d  heading %.0f°→%.0f°  turn %.0f° %s",
                 prev, curr,
                 math.degrees(heading), math.degrees(new_heading),
-                math.degrees(abs(turn)), direction_str,
+                turn_deg, direction_str,
             )
             heading = new_heading
 
@@ -224,6 +249,29 @@ class PathNavigationNode(DTROS):
 
         return 1.0 if turn >= 0 else -1.0
 
+    def _pulse_search_cmd(self) -> Twist2DStamped:
+        """
+        Rotate-pause-rotate search pattern.
+        Rotates at SEARCH_ANGULAR_SPEED for SEARCH_PULSE_ROTATE_SEC,
+        then stops for SEARCH_PULSE_PAUSE_SEC so the camera gets a still frame.
+        """
+        if SEARCH_PULSE_PAUSE_SEC <= 0.0:
+            return self._controller.search_cmd(self._search_direction)
+
+        elapsed = (rospy.Time.now() - self._search_pulse_start).to_sec()
+        cycle = SEARCH_PULSE_ROTATE_SEC + SEARCH_PULSE_PAUSE_SEC
+        phase = elapsed % cycle
+
+        if phase < SEARCH_PULSE_ROTATE_SEC:
+            if self._search_in_pause:
+                self._search_in_pause = False
+            return self._controller.search_cmd(self._search_direction)
+        else:
+            if not self._search_in_pause:
+                self._search_in_pause = True
+                rospy.loginfo_throttle(2.0, "[Nav] Pulse search: pausing for camera.")
+            return self._controller.stop_cmd()
+
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _image_cb(self, msg: CompressedImage) -> None:
@@ -270,6 +318,7 @@ class PathNavigationNode(DTROS):
 
         # ── ARTag detection ──────────────────────────────────────────────────
         detections = self._detector.detect(undistorted, new_K)
+        self._detected_this_frame = set(detections.keys())
 
         # ── Control decision ─────────────────────────────────────────────────
         target_id = self._target_node
@@ -279,7 +328,13 @@ class PathNavigationNode(DTROS):
             # Use forward distance (tvec[2]) only — camera height is part of
             # norm(tvec) and would prevent the threshold from ever triggering
             # for floor-mounted markers.
-            dist = float(abs(tvec[2]))
+            dist = float(tvec[2])
+            if dist < 0:
+                rospy.logwarn_throttle(
+                    1.0, "[Nav] Tag N%d has negative depth (%.3f m) — tag behind camera?",
+                    target_id, dist,
+                )
+                dist = 999.0
             self._tag_lost_frames = 0
             self._last_tvec = tvec.copy()
             self._last_dist = dist
@@ -332,7 +387,13 @@ class PathNavigationNode(DTROS):
 
             # While waiting for patience or in SEARCHING, act accordingly
             if self._state == _SEARCHING:
-                self._cmd_pub.publish(self._controller.search_cmd(self._search_direction))
+                rospy.loginfo_throttle(
+                    3.0,
+                    "[Nav] SEARCHING for N%d (tag ID %d) — rotating %s",
+                    target_id, target_id,
+                    "LEFT" if self._search_direction > 0 else "RIGHT",
+                )
+                self._cmd_pub.publish(self._pulse_search_cmd())
             elif self._state == _APPROACHING:
                 # Still within patience window – keep driving toward last known position
                 if self._last_tvec is not None:
@@ -360,6 +421,8 @@ class PathNavigationNode(DTROS):
             math.degrees(self._heading), prev_node, node_id,
         )
 
+        self._visited_nodes.add(node_id)
+
         if node_id == GOAL_NODE:
             self._state = _GOAL_REACHED
             rospy.loginfo("[Nav] *** Goal Reached ***")
@@ -372,17 +435,55 @@ class PathNavigationNode(DTROS):
             self._tag_lost_frames = 0
             self._last_tvec = None
             self._last_dist = 999.0
+            self._search_pulse_start = rospy.Time.now()
+            self._search_in_pause = False
 
-            # Log what turn is needed for the next target
+            # Print and log the command needed to reach the next target
             next_node = self._target_node
             target_heading = _direction_between(node_id, next_node)
             turn = _normalize_angle(target_heading - self._heading)
             direction_str = "LEFT" if turn > 0 else "RIGHT" if turn < 0 else "STRAIGHT"
+            turn_deg = math.degrees(abs(turn))
+
+            if direction_str == "STRAIGHT":
+                cmd_str = "go STRAIGHT"
+            else:
+                cmd_str = f"turn {direction_str} {turn_deg:.0f}°, then go STRAIGHT"
+            print(f"[Nav] N{node_id} → N{next_node}: {cmd_str}")
 
             rospy.loginfo(
-                "[Nav] Next: N%d  need to turn %.0f° %s  then search.",
-                next_node, math.degrees(abs(turn)), direction_str,
+                "[Nav] Next: N%d  need to turn %.0f° %s  then go straight.",
+                next_node, turn_deg, direction_str,
             )
+
+    def _viz_cb(self, _event) -> None:
+        """Publish the grid visualization image at 2 Hz."""
+        try:
+            current = self._path[self._target_idx - 1]
+            nxt = self._target_node if self._state != _GOAL_REACHED else GOAL_NODE
+            img = self._viz.render(
+                current_node=current,
+                next_node=nxt,
+                heading_rad=self._heading,
+                detected_ids=self._detected_this_frame,
+                visited_nodes=self._visited_nodes,
+                state=self._state,
+                step_idx=self._target_idx - 1,
+            )
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if not ok:
+                return
+            msg = CompressedImage()
+            msg.header.stamp = rospy.Time.now()
+            msg.format = "jpeg"
+            msg.data = buf.tobytes()
+            self._viz_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            rospy.logwarn_throttle(5.0, "[Viz] render failed: %s", exc)
+
+    def _shutdown_cb(self) -> None:
+        self._cmd_pub.publish(self._controller.stop_cmd())
+        rospy.loginfo("[Nav] Shutdown: stop published.")
 
     def _watchdog_cb(self, _event) -> None:
         """Stop the robot if no camera image has arrived for >1 second."""

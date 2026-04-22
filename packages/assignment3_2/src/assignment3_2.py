@@ -56,31 +56,31 @@ def build_demo_sequence(pub):
          lambda: mp.move_forward_cm(40.0, pub)),
 
         # Step 2 – short pause so we can see what happened
-        ("Pause 1 s",
-         lambda: mp.pause(1.0, pub)),
+        ("Pause 3 s",
+         lambda: mp.pause(3.0, pub)),
 
         # Step 3 – turn 90° to the RIGHT (negative = CW)
         ("Turn 90° RIGHT",
          lambda: mp.turn_degrees(-90.0, pub)),
 
-        # Step 4 – pause again
-        ("Pause 1 s",
-         lambda: mp.pause(1.0, pub)),
+        # # Step 4 – pause again
+        ("Pause 3 s",
+         lambda: mp.pause(3.0, pub)),
 
-        # Step 5 – move another 40 cm straight ahead (new direction)
+        # # Step 5 – move another 40 cm straight ahead (new direction)
         ("Move forward 40 cm",
          lambda: mp.move_forward_cm(40.0, pub)),
 
-        # Step 6 – turn 90° to the LEFT (+90)
+        # # Step 6 – turn 90° to the LEFT (+90)
         ("Turn 90° LEFT",
          lambda: mp.turn_degrees(90.0, pub)),
 
         # ── Add your own steps below ──────────────────────────────────────────
-        # ("Turn 180° (U-turn)",
-        #  lambda: mp.turn_degrees(180.0, pub)),
+        ("Turn 180° (U-turn)",
+         lambda: mp.turn_degrees(180.0, pub)),
         #
-        # ("Move forward 20 cm",
-        #  lambda: mp.move_forward_cm(20.0, pub)),
+        ("Move forward 20 cm",
+         lambda: mp.move_forward_cm(20.0, pub)),
     ]
 
 

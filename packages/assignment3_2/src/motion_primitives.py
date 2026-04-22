@@ -24,11 +24,19 @@ from nav_msgs.msg import Odometry
 # Measure these on your robot and update until motion is accurate.
 
 # Forward speed used in move_forward_cm()  [m/s]
-MOVE_SPEED = 0.20
+# Calibrated: robot travels 44 cm when commanded 40 cm at 0.20 m/s → actual = 0.22 m/s
+MOVE_SPEED = 0.22
 
 # Angular speed used in turn_degrees()  [rad/s]
+# Calibrated: 1.283 rad/s → 92.2° without ramp (best known value)
 # Positive = CCW (left), robot frame
-TURN_SPEED = 1.2
+TURN_SPEED = 1.283
+
+# Ramp-down durations [s] — speed linearly drops from full → 0.
+# Kept short for forward motion: long ramp causes arc because motors diverge at low speed.
+MOVE_RAMP_DOWN_SEC = 0.15
+# No ramp for turns: ramp causes unpredictable overshoot due to nonlinear motor behavior at low omega.
+TURN_RAMP_DOWN_SEC = 0.0
 
 # Set True only after confirming /odometry topic publishes correctly.
 USE_ODOMETRY = False
@@ -198,13 +206,16 @@ def move_forward_cm(
     5. Log actual result.
     """
     distance_m = distance_cm / 100.0
-    expected_sec = distance_m / MOVE_SPEED
+    # Total duration accounts for ramp-down: distance = v*(t_full) + v*ramp/2
+    # → t_total = distance/v + ramp/2
+    ramp = min(MOVE_RAMP_DOWN_SEC, distance_m / MOVE_SPEED * 0.5)  # cap at 50% of motion
+    expected_sec = distance_m / MOVE_SPEED + ramp / 2.0
 
     rospy.loginfo("-" * 50)
     rospy.loginfo("[Motion] INTENT: move forward %.1f cm (%.3f m)", distance_cm, distance_m)
     rospy.loginfo(
-        "[Motion]   speed=%.3f m/s  expected_duration=%.3f s",
-        MOVE_SPEED, expected_sec,
+        "[Motion]   speed=%.3f m/s  expected_duration=%.3f s  ramp=%.2f s",
+        MOVE_SPEED, expected_sec, ramp,
     )
 
     if USE_ODOMETRY and _odom._x is not None:
@@ -215,6 +226,7 @@ def move_forward_cm(
 
     rate = rospy.Rate(LOOP_HZ)
     t_start = rospy.Time.now()
+    ramp_start = expected_sec - ramp
 
     step = 0
     while not rospy.is_shutdown():
@@ -244,20 +256,27 @@ def move_forward_cm(
             if elapsed >= expected_sec:
                 break
             remaining = expected_sec - elapsed
-            if step % LOOP_HZ == 0:  # log once per second
+            if step % LOOP_HZ == 0:
                 rospy.loginfo(
                     "[Motion] MOVING  elapsed=%.2f s  remaining=%.2f s",
                     elapsed, remaining,
                 )
 
-        publisher.publish(_make_cmd(MOVE_SPEED, 0.0))
+        # Ramp-down: linearly reduce speed in the final `ramp` seconds
+        if elapsed >= ramp_start and ramp > 0:
+            scale = max(0.0, (expected_sec - elapsed) / ramp)
+            v = MOVE_SPEED * scale
+        else:
+            v = MOVE_SPEED
+
+        publisher.publish(_make_cmd(v, 0.0))
         step += 1
         rate.sleep()
 
     publisher.publish(_stop_cmd())
     total_elapsed = (rospy.Time.now() - t_start).to_sec()
 
-    time_based_estimate_cm = total_elapsed * MOVE_SPEED * 100.0
+    time_based_estimate_cm = (total_elapsed - ramp / 2.0) * MOVE_SPEED * 100.0
     rospy.loginfo("[Motion] RESULT: move_forward_cm")
     rospy.loginfo("  target   : %.1f cm", distance_cm)
     rospy.loginfo("  duration : %.3f s  (expected %.3f s)", total_elapsed, expected_sec)
@@ -284,8 +303,11 @@ def turn_degrees(
     """
     angle_rad = math.radians(angle_deg)
     direction_str = "LEFT (CCW)" if angle_deg >= 0 else "RIGHT (CW)"
-    omega = TURN_SPEED if angle_deg >= 0 else -TURN_SPEED
-    expected_sec = abs(angle_rad) / TURN_SPEED
+    sign = 1.0 if angle_deg >= 0 else -1.0
+    omega_full = sign * TURN_SPEED
+    # Total duration accounts for ramp-down: angle = w*(t_full) + w*ramp/2
+    ramp = min(TURN_RAMP_DOWN_SEC, abs(angle_rad) / TURN_SPEED * 0.5)
+    expected_sec = abs(angle_rad) / TURN_SPEED + ramp / 2.0
 
     rospy.loginfo("-" * 50)
     rospy.loginfo(
@@ -293,8 +315,8 @@ def turn_degrees(
         abs(angle_deg), direction_str,
     )
     rospy.loginfo(
-        "[Motion]   omega=%.3f rad/s  expected_duration=%.3f s",
-        omega, expected_sec,
+        "[Motion]   omega=%.3f rad/s  expected_duration=%.3f s  ramp=%.2f s",
+        omega_full, expected_sec, ramp,
     )
 
     if USE_ODOMETRY and _odom._yaw is not None:
@@ -308,6 +330,7 @@ def turn_degrees(
 
     rate = rospy.Rate(LOOP_HZ)
     t_start = rospy.Time.now()
+    ramp_start = expected_sec - ramp
     step = 0
 
     while not rospy.is_shutdown():
@@ -342,8 +365,15 @@ def turn_degrees(
                     "[Motion] TURNING  elapsed=%.2f s  remaining=%.2f s  "
                     "time-est=%.1f°",
                     elapsed, remaining,
-                    elapsed * abs(omega) * (180.0 / math.pi),
+                    elapsed * TURN_SPEED * (180.0 / math.pi),
                 )
+
+        # Ramp-down: linearly reduce omega in the final `ramp` seconds
+        if elapsed >= ramp_start and ramp > 0:
+            scale = max(0.0, (expected_sec - elapsed) / ramp)
+            omega = omega_full * scale
+        else:
+            omega = omega_full
 
         publisher.publish(_make_cmd(0.0, omega))
         step += 1
@@ -352,7 +382,7 @@ def turn_degrees(
     publisher.publish(_stop_cmd())
     total_elapsed = (rospy.Time.now() - t_start).to_sec()
 
-    time_based_estimate_deg = total_elapsed * abs(omega) * (180.0 / math.pi)
+    time_based_estimate_deg = (total_elapsed - ramp / 2.0) * TURN_SPEED * (180.0 / math.pi)
     rospy.loginfo("[Motion] RESULT: turn_degrees")
     rospy.loginfo("  target   : %.1f° %s", abs(angle_deg), direction_str)
     rospy.loginfo("  duration : %.3f s  (expected %.3f s)", total_elapsed, expected_sec)

@@ -5,8 +5,8 @@
 ```bash
 dts fleet discover
 ping ROBOT_NAME.local
-dts devel build -f -H ROBOT_NAME
-dts devel run -H ROBOT_NAME -L my-launcher
+dts devel build -f -H mouse
+dts devel run -H mouse -L my-launcher
 ```
 
 ``` bash

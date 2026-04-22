@@ -30,6 +30,7 @@ from duckietown_msgs.msg import Twist2DStamped
 from config import (
     ALIGN_THRESHOLD_RAD,
     ANGULAR_GAIN,
+    CAMERA_LATERAL_BIAS,
     LINEAR_SPEED,
     SEARCH_ANGULAR_SPEED,
     SLOWDOWN_FACTOR,
@@ -55,8 +56,8 @@ class NavigationController:
         -------
         duckietown_msgs/Twist2DStamped
         """
-        forward = float(tvec[2])         # depth (z)
-        lateral = float(tvec[0])         # horizontal offset (x)
+        forward = float(tvec[2])                          # depth (z)
+        lateral = float(tvec[0]) - CAMERA_LATERAL_BIAS   # horizontal offset (x), bias-corrected
 
         # Heading error: positive means tag is to the right
         #   → omega should be negative (turn right = CW in ROS)
@@ -79,18 +80,8 @@ class NavigationController:
         return cmd
 
     def search_cmd(self, direction: float = 1.0) -> Twist2DStamped:
-        """
-        Rotate in place to scan for a lost or not-yet-visible ARTag.
-
-        Parameters
-        ----------
-        direction : +1.0 for CCW (left), -1.0 for CW (right)
-
-        Returns
-        -------
-        duckietown_msgs/Twist2DStamped  (v = 0, omega = ±SEARCH_ANGULAR_SPEED)
-        """
         cmd = Twist2DStamped()
+        cmd.v = 0.0
         cmd.omega = SEARCH_ANGULAR_SPEED * direction
         return cmd
 
