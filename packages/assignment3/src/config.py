@@ -69,7 +69,7 @@ MARKER_SIZE_M    = 0.0675   # physical side length of the printed tags (metres)
 PROXIMITY_THRESHOLD_M = 0.07
 
 # Maximum forward speed (m/s) sent to cmd_vel.
-LINEAR_SPEED = 0.30
+LINEAR_SPEED = 0.26
 
 # Proportional gain for heading correction (rad/s per rad of error).
 ANGULAR_GAIN = 0.8
@@ -96,7 +96,7 @@ SEARCH_ANGULAR_SPEED = 2.0
 # Pulse-search: rotate for SEARCH_PULSE_ROTATE_SEC, then stop for
 # SEARCH_PULSE_PAUSE_SEC so the camera gets a clear still frame.
 # Set SEARCH_PULSE_PAUSE_SEC = 0.0 to disable.
-SEARCH_PULSE_ROTATE_SEC = 0.8
+SEARCH_PULSE_ROTATE_SEC = 0.7
 SEARCH_PULSE_PAUSE_SEC  = 0.4
 
 # Number of consecutive frames without a target tag detection before the
@@ -113,7 +113,7 @@ WATCHDOG_HZ = 10
 # TAG_LOST_PATIENCE_FRAMES while the last known distance was below
 # BLIND_APPROACH_DIST, drive forward blindly for this many seconds before
 # declaring the node as reached.
-BLIND_FORWARD_SEC   = 0.5
+BLIND_FORWARD_SEC   = 0.20
 BLIND_FORWARD_SPEED = 0.18
 
 # If tag was lost while APPROACHING and last known distance (tvec[2]) was below
