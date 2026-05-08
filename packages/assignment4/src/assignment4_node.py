@@ -5,33 +5,23 @@ Pipeline at startup
 -------------------
 1. Load YAML.
 2. Run A* once on the empty grid → list of dense waypoints.
-3. Subscribe to /<robot>/odometry_node/odometry through PoseSource.
-4. Wait until pose is available, then start the control loop.
+3. Subscribe to wheel-encoder ticks via PoseSource.
+4. Wait until both wheels reported, then start the control loop.
 
 Control loop  (cfg.control.rate_hz, default 10 Hz)
 ---------------------------------------------------
 * Read current world pose from PoseSource.
 * If within cfg.goal.tol_m of B → publish stop, transition to GOAL_REACHED.
 * Otherwise call DWAPlanner.step → get the chosen (v, ω) and all rollouts.
-* Publish chosen (v, ω) on /<robot>/car_cmd_switch_node/cmd.
+* If no feasible rollout, publish zero velocity for this tick and try again.
+* Otherwise publish chosen (v, ω) on /<robot>/car_cmd_switch_node/cmd.
 * Cache the latest snapshot for the visualiser.
 
 Visualiser  (cfg.viz.rate_hz, default 5 Hz)
 -------------------------------------------
 * Render the cached snapshot via viz.Renderer (matplotlib + Agg backend).
-* Convert the figure canvas to JPEG via cv2.
 * Publish a sensor_msgs/CompressedImage on
       /<robot>/assignment4/viz/compressed
-  Watch live from a laptop with rqt_image_view.
-
-State machine
--------------
-INIT          – waiting for the first odometry message.
-RUNNING       – control loop active, robot driving toward B.
-GOAL_REACHED  – within tolerance, publishing zero velocity.
-ABORT         – DWA could not find any feasible move (every rollout
-                rejected). The robot is stopped and the user is asked to
-                intervene; the node continues publishing for the visualiser.
 """
 
 from __future__ import annotations
@@ -42,9 +32,7 @@ matplotlib.use("Agg")
 
 import math
 import os
-import sys
 import threading
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 import cv2
@@ -55,7 +43,6 @@ from duckietown.dtros import DTROS, NodeType
 from duckietown_msgs.msg import Twist2DStamped
 from sensor_msgs.msg import CompressedImage
 
-# Local imports — sys.path is set in assignment4.py so these resolve.
 from astar_grid import path_length, plan as astar_plan
 from config_loader import Config, default_path, load
 from costmap import CircleObstacle
@@ -66,23 +53,9 @@ from viz import Renderer, Snapshot
 State = Tuple[float, float, float]
 Point = Tuple[float, float]
 
-# State machine
 _INIT = "INIT"
 _RUNNING = "RUNNING"
-_RECOVERING = "RECOVERING"
 _GOAL_REACHED = "GOAL_REACHED"
-_ABORT = "ABORT"
-
-# Recovery: small in-place rotation toward goal when DWA can't find a feasible
-# move. Prevents the robot from giving up at the first dead-end.
-_RECOVERY_OMEGA = 1.0      # rad/s
-_RECOVERY_MAX_SEC = 2.5    # if recovery doesn't help in this long, give up
-
-# "Stuck near goal" detection: if the robot has been close to the goal but
-# stationary (no pose change) for this long, declare goal reached. Handles
-# encoder dropouts and physical stuck-against-something scenarios.
-_NEAR_GOAL_FACTOR = 2.0    # x tolerance: robot is "near" if d_goal < tol*factor
-_STALE_POSE_SEC = 2.0
 
 
 class Assignment4Node(DTROS):
@@ -90,7 +63,6 @@ class Assignment4Node(DTROS):
     def __init__(self, node_name: str):
         super().__init__(node_name=node_name, node_type=NodeType.GENERIC)
 
-        # ── Config ──────────────────────────────────────────────────────────
         cfg_path = rospy.get_param("~config_path", str(default_path()))
         self.cfg: Config = load(cfg_path)
         rospy.loginfo("[A4] Loaded config from %s", cfg_path)
@@ -101,7 +73,6 @@ class Assignment4Node(DTROS):
         )
         prefix = f"/{self._vehicle}" if self._vehicle else ""
 
-        # ── Plan ────────────────────────────────────────────────────────────
         self._waypoints: List[Point] = astar_plan(self.cfg)
         rospy.loginfo(
             "[A4] A*: %d dense waypoints, length %.3f m",
@@ -114,7 +85,6 @@ class Assignment4Node(DTROS):
             self._obstacle.radius, self._obstacle.inflated_radius,
         )
 
-        # ── Components ──────────────────────────────────────────────────────
         self._planner = DWAPlanner(self.cfg, self._obstacle, self._waypoints)
         self._pose_src = PoseSource(
             self._vehicle,
@@ -131,7 +101,6 @@ class Assignment4Node(DTROS):
             "Assignment 4 — A* + DWA local planner", fontsize=11,
         )
 
-        # ── ROS topics ──────────────────────────────────────────────────────
         self._cmd_pub = rospy.Publisher(
             f"{prefix}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1,
         )
@@ -139,19 +108,12 @@ class Assignment4Node(DTROS):
             f"{prefix}/assignment4/viz/compressed", CompressedImage, queue_size=1,
         )
 
-        # ── Mutable state ───────────────────────────────────────────────────
         self._state = _INIT
         self._snap_lock = threading.Lock()
         self._snap: Optional[Snapshot] = None
         self._trace: List[Point] = []
         self._step_idx: int = 0
-        self._recovery_t0: Optional[rospy.Time] = None
-        self._recovery_dir: float = 1.0   # +1 = CCW, -1 = CW
-        # Stuck-near-goal tracking
-        self._last_pose: Optional[State] = None
-        self._last_pose_change_t: Optional[rospy.Time] = None
 
-        # ── Timers ──────────────────────────────────────────────────────────
         rospy.Timer(
             rospy.Duration(1.0 / self.cfg.control.rate_hz),
             self._control_cb,
@@ -171,13 +133,12 @@ class Assignment4Node(DTROS):
     # ── Control ─────────────────────────────────────────────────────────────
 
     def _control_cb(self, _event) -> None:
-        if self._state == _GOAL_REACHED or self._state == _ABORT:
+        if self._state == _GOAL_REACHED:
             self._cmd_pub.publish(self._stop_cmd())
             return
 
         pose = self._pose_src.get()
         if pose is None:
-            # Don't move until we have an anchored pose.
             self._cmd_pub.publish(self._stop_cmd())
             return
 
@@ -198,42 +159,19 @@ class Assignment4Node(DTROS):
             self._cache_snapshot(pose, [], None, info="*** goal reached ***")
             return
 
-        # Stuck-near-goal: if the pose hasn't changed for a while AND we're
-        # within a couple of tolerances of the goal, declare success. Saves
-        # us from spinning forever when encoders drop out at the finish line.
-        now = rospy.Time.now()
-        if self._last_pose is None or self._pose_diff(pose, self._last_pose) > 0.005:
-            self._last_pose = pose
-            self._last_pose_change_t = now
-        elif (self._last_pose_change_t is not None
-              and (now - self._last_pose_change_t).to_sec() >= _STALE_POSE_SEC
-              and d_goal <= self.cfg.goal.tol_m * _NEAR_GOAL_FACTOR):
-            self._state = _GOAL_REACHED
-            self._cmd_pub.publish(self._stop_cmd())
-            rospy.logwarn(
-                "[A4] *** Goal reached (stuck-near-goal at d=%.3f m, "
-                "no motion for %.1f s) ***",
-                d_goal, _STALE_POSE_SEC,
-            )
-            self._cache_snapshot(pose, [], None,
-                                 info="*** goal reached (stuck) ***")
-            return
-
-        # Run DWA on the latest pose.
         result: DWAResult = self._planner.step(pose)
         chosen: Optional[Rollout] = result.chosen
 
         if chosen is None or chosen.rejected:
-            self._enter_or_continue_recovery(pose, result)
+            # No feasible move this tick — stop and try again next tick.
+            # Pose drift may briefly clear this on its own; no recovery
+            # rotation, no abort.
+            self._cmd_pub.publish(self._stop_cmd())
+            self._cache_snapshot(pose, list(result.rollouts), chosen,
+                                 info="no feasible move (waiting)")
+            rospy.logwarn_throttle(2.0, "[A4] No feasible DWA move — holding.")
             return
 
-        # Successful DWA decision — leave recovery if we were in it.
-        if self._state == _RECOVERING:
-            rospy.loginfo("[A4] Recovery succeeded, resuming RUNNING.")
-            self._state = _RUNNING
-            self._recovery_t0 = None
-
-        # Publish command, clamped to control limits as a safety net.
         v = max(0.0, min(self.cfg.control.linear_max, float(chosen.v)))
         w = max(-self.cfg.control.angular_max,
                 min(self.cfg.control.angular_max, float(chosen.w)))
@@ -243,7 +181,6 @@ class Assignment4Node(DTROS):
         cmd.omega = w
         self._cmd_pub.publish(cmd)
 
-        # Update trace + cache snapshot.
         self._trace.append((x, y))
         self._step_idx += 1
         self._cache_snapshot(
@@ -256,51 +193,6 @@ class Assignment4Node(DTROS):
             "[A4] pose=(%.2f, %.2f, %.0f°)  cmd  v=%.2f  ω=%+.2f  d_goal=%.2f",
             x, y, math.degrees(pose[2]), v, w, d_goal,
         )
-
-    # ── Recovery ────────────────────────────────────────────────────────────
-
-    def _enter_or_continue_recovery(self, pose: State, result: DWAResult) -> None:
-        """When DWA produces no feasible move, rotate in place toward the
-        goal and try again. Gives up only after _RECOVERY_MAX_SEC elapses,
-        so we don't spin forever in a true dead-end.
-        """
-        now = rospy.Time.now()
-        if self._state != _RECOVERING:
-            self._state = _RECOVERING
-            self._recovery_t0 = now
-            # Choose rotation direction: turn toward the goal.
-            dx = self.cfg.goal.x - pose[0]
-            dy = self.cfg.goal.y - pose[1]
-            target_heading = math.atan2(dy, dx)
-            err = target_heading - pose[2]
-            while err > math.pi:  err -= 2 * math.pi
-            while err < -math.pi: err += 2 * math.pi
-            self._recovery_dir = 1.0 if err >= 0.0 else -1.0
-            rospy.logwarn(
-                "[A4] No feasible DWA move — entering RECOVERY "
-                "(rotating %s toward goal).",
-                "CCW" if self._recovery_dir > 0 else "CW",
-            )
-
-        elapsed = (now - self._recovery_t0).to_sec() if self._recovery_t0 else 0.0
-        if elapsed > _RECOVERY_MAX_SEC:
-            self._state = _ABORT
-            self._cmd_pub.publish(self._stop_cmd())
-            rospy.logerr(
-                "[A4] Recovery timed out after %.1fs. Giving up (ABORT).", elapsed,
-            )
-            self._cache_snapshot(pose, list(result.rollouts), result.chosen,
-                                 info="ABORT: recovery timed out")
-            return
-
-        # Issue an in-place rotation command.
-        cmd = Twist2DStamped()
-        cmd.header.stamp = now
-        cmd.v = 0.0
-        cmd.omega = self._recovery_dir * _RECOVERY_OMEGA
-        self._cmd_pub.publish(cmd)
-        self._cache_snapshot(pose, list(result.rollouts), result.chosen,
-                             info=f"RECOVERY {elapsed:.1f}s")
 
     # ── Visualisation ───────────────────────────────────────────────────────
 
@@ -349,10 +241,6 @@ class Assignment4Node(DTROS):
         )
         with self._snap_lock:
             self._snap = snap
-
-    @staticmethod
-    def _pose_diff(a: State, b: State) -> float:
-        return math.hypot(a[0] - b[0], a[1] - b[1])
 
     @staticmethod
     def _stop_cmd() -> Twist2DStamped:

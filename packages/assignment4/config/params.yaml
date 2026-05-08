@@ -1,8 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Assignment 4 – A* + DWA parameters
+# Assignment 4 – A* + DWA parameters (simplified for noisy real hardware)
 #
-# All tunables live here. The instructor provides A, B, and the obstacle
-# position at lab time; only those three sections need to be edited then.
+# Cost: path + goal + obstacle.  Velocity is constant (DWA only samples ω).
 # ─────────────────────────────────────────────────────────────────────────────
 
 workspace:
@@ -12,73 +11,63 @@ workspace:
   y_max: 1.5
 
 grid:
-  resolution_m: 0.05      # cell size for the occupancy grid used by A*
-  allow_diagonal: true    # 8-connected neighbourhood
+  resolution_m: 0.05
+  allow_diagonal: true
 
 start:
   x: 0.15
   y: 0.15
-  theta: 0.0              # initial heading (rad), 0 = facing +x
+  theta: 0.0
 
 goal:
   x: 1.35
   y: 1.35
-  tol_m: 0.15             # robot is "at the goal" once within this distance
-                          # (loosened from 0.10 — pose drift makes 10cm too tight)
+  tol_m: 0.25             # generous — encoder drift makes 15 cm too tight
 
 obstacle:
   x: 0.75
   y: 0.75
-  radius_m: 0.08          # physical radius of the obstacle
+  radius_m: 0.08
 
 robot:
-  radius_m: 0.06          # ~Duckiebot footprint half-width
-  safety_margin_m: 0.04   # added to robot radius before inflating obstacles
-  wheel_base_m: 0.10      # distance between left/right wheels (Duckiebot)
+  radius_m: 0.06
+  safety_margin_m: 0.04
+  wheel_base_m: 0.10
   wheel_radius_m: 0.0318
-  ticks_per_rev: 135      # encoder ticks per wheel revolution
-  left_sign:  1.0         # multiply left tick deltas by this (-1.0 if reversed)
-  right_sign: 1.0         # ditto for right
-  pose_log_throttle_s: 0.5  # period for pose-debug log (0 to silence)
+  ticks_per_rev: 135
+  left_sign:  1.0
+  right_sign: 1.0
+  pose_log_throttle_s: 0.5
 
 sensing:
-  radius_m: 0.40          # cosmetic disc + obstacle awareness gate
+  radius_m: 0.40
 
 dwa:
-  v_min: 0.0              # m/s
-  v_max: 0.20             # tightened from 0.25 for safer first runs
-  w_min: -2.5             # rad/s
-  w_max:  2.5
-  v_samples: 7
+  v_min: 0.10
+  v_max: 0.10             # constant velocity (v_min == v_max, v_samples = 1)
+  w_min: -2.0
+  w_max:  2.0
+  v_samples: 1
   w_samples: 11
-  a_max: 4.0              # m/s^2  — wide enough that v can change by full range in one step
-  alpha_max: 12.0         # rad/s^2 — same idea for ω
-  window_dt: 0.5          # acceleration window = a_max * window_dt (was: dt * horizon, too narrow)
-  horizon_s: 1.5
+  alpha_max: 8.0          # ω rate-limit (rad/s²) for smoothness
+  window_dt: 0.3
+  horizon_s: 1.0          # short horizon — long-future drift is meaningless
   dt: 0.1
   weights:
-    path: 1.0             # cost of distance to global path
-    goal: 0.6             # cost of distance to goal
-    obstacle: 2.5         # cost of getting close to obstacle (within safe_clear_m)
-    heading: 0.3          # cost of misalignment with path tangent
-    velocity: 2.0         # reward for forward speed (encourages progress)
-    wall: 5.0             # cost of approaching workspace borders (within wall_clear_m)
-                          # NOTE: must allow goal to be reachable — see wall_clear_m
-  safe_clear_m: 0.10      # obstacle cost is 0 once clearance exceeds this
-  wall_clear_m: 0.13      # wall cost is 0 once distance to nearest wall exceeds this
-                          # MUST be < distance from goal to nearest wall (here goal
-                          # is 0.15 m from wall, so 0.13 m gives a small margin)
-  reject_in_inflated: true  # hard-reject rollouts entering the inflated disc
-  carrot_lookahead_m: 0.30  # reserved (unused at the moment)
+    path: 1.0             # distance to global path
+    goal: 1.5             # distance to goal (slightly stronger than path)
+    obstacle: 3.0         # clearance from inflated obstacle
+  safe_clear_m: 0.18      # obstacle cost zero once clearance exceeds this
+  reject_in_inflated: true
 
 control:
   rate_hz: 10
-  linear_max: 0.25
+  linear_max: 0.15
   angular_max: 2.0
 
 viz:
   rate_hz: 5
-  show_rejected: true     # render rollouts that entered the inflated disc
+  show_rejected: true
 
 path:
-  densify_step_m: 0.02    # interpolate A* waypoints to this spacing
+  densify_step_m: 0.02

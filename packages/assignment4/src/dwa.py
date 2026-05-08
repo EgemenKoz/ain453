@@ -1,26 +1,22 @@
 """
-dwa.py – Dynamic Window Approach local planner (from scratch).
+dwa.py – Dynamic Window Approach local planner (simplified).
 
 Pipeline (one control step):
 
-  1. Build the dynamic window of feasible (v, ω) commands, restricted by
-     velocity bounds, acceleration bounds (around the *current* command),
-     and the configurable workspace limits.
-  2. For each (v, ω) in a regular grid over the window, simulate a unicycle
-     rollout for ``horizon_s`` seconds in steps of ``dt``.
-  3. Score each rollout with a weighted sum of:
-       * distance to the densified A* path
-       * distance to the goal
-       * proximity to the inflated obstacle (only when within sensing radius)
-       * heading misalignment with the path tangent at the closest waypoint
-     Rollouts that enter the inflated obstacle are hard-rejected when
-     ``reject_in_inflated`` is true; otherwise they receive a large penalty.
-  4. Return the chosen (v, ω) along with every rollout (and its score) for
-     visualisation.
+  1. v is fixed at ``v_max`` (constant velocity – DWA samples ω only).
+  2. Build the ω window as ``[last_w − band, last_w + band]`` clamped to the
+     static ω limits, where ``band = alpha_max · window_dt``. This rate-limits
+     ω between control steps so the noisy real robot doesn't jerk.
+  3. For each ω sample, simulate a unicycle rollout for ``horizon_s`` seconds
+     in steps of ``dt``.
+  4. Score each rollout with: distance to A* path + distance to goal +
+     obstacle clearance penalty. Rollouts that enter the inflated obstacle
+     are hard-rejected.
+  5. Return the lowest-cost rollout.
 
-The module is intentionally numpy-vectorised over rollout points but uses
-plain Python loops over the (v, ω) grid — the grid is small (≤ ~80 entries)
-so the overhead is negligible compared to the per-rollout work.
+Cost terms are kept to the minimum required by the assignment (path, goal,
+obstacle). Heading, velocity-reward, wall, and out-of-bounds terms were
+removed because pose drift on the real robot makes them unreliable.
 """
 
 from __future__ import annotations
@@ -81,84 +77,24 @@ def _rollout(state: State, v: float, w: float, horizon_s: float, dt: float
 # ── Cost terms ──────────────────────────────────────────────────────────────
 
 def _path_distance_term(xs: np.ndarray, ys: np.ndarray,
-                        path_xy: np.ndarray) -> Tuple[float, int]:
-    """
-    Mean perpendicular distance from rollout points to the A* path.
-    Returns (mean_distance, idx_of_nearest_waypoint_for_last_rollout_point).
-    """
-    # Per-point nearest-waypoint distance via broadcasting:
-    # rollout points  shape (H+1, 1, 2)
-    # path points     shape (1, P, 2)
+                        path_xy: np.ndarray) -> float:
+    """Mean nearest-waypoint distance from rollout points to the A* path."""
     pts = np.stack([xs, ys], axis=1)[:, None, :]
     diff = pts - path_xy[None, :, :]
     sq = np.sum(diff * diff, axis=2)               # (H+1, P)
     min_sq = sq.min(axis=1)                        # (H+1,)
-    last_idx = int(sq[-1].argmin())
-    return float(np.sqrt(min_sq).mean()), last_idx
+    return float(np.sqrt(min_sq).mean())
 
 
 def _goal_term(xs: np.ndarray, ys: np.ndarray, target: Point) -> float:
-    """Euclidean distance from rollout *endpoint* to *target* (goal or carrot)."""
+    """Euclidean distance from rollout *endpoint* to *target*."""
     return math.hypot(xs[-1] - target[0], ys[-1] - target[1])
-
-
-def _carrot_point(state: State, path_xy: np.ndarray, lookahead_m: float) -> Point:
-    """Pick a target point on the path: walk lookahead_m ahead from the
-    waypoint nearest the robot. Falls back to the final waypoint when the
-    look-ahead exceeds the remaining path length.
-    """
-    rx, ry = state[0], state[1]
-    diffs = path_xy - np.array([rx, ry])
-    dists = np.einsum("ij,ij->i", diffs, diffs)   # squared distance per waypoint
-    nearest = int(dists.argmin())
-    accum = 0.0
-    idx = nearest
-    n = path_xy.shape[0]
-    while idx + 1 < n and accum < lookahead_m:
-        seg = math.hypot(
-            path_xy[idx + 1, 0] - path_xy[idx, 0],
-            path_xy[idx + 1, 1] - path_xy[idx, 1],
-        )
-        accum += seg
-        idx += 1
-    return (float(path_xy[idx, 0]), float(path_xy[idx, 1]))
-
-
-def _heading_term(state: State, v: float, w: float, dt: float,
-                  path_xy: np.ndarray, last_idx: int) -> float:
-    """
-    Misalignment (radians, in [0, π]) between the rollout's final heading
-    and the path tangent at the waypoint closest to the rollout's endpoint.
-    Returns 0 for stationary rollouts so they are not unfairly penalised.
-    """
-    if v == 0.0 and w == 0.0:
-        return 0.0
-    n = path_xy.shape[0]
-    if n < 2:
-        return 0.0
-    j = min(last_idx, n - 2)
-    tx = path_xy[j + 1, 0] - path_xy[j, 0]
-    ty = path_xy[j + 1, 1] - path_xy[j, 1]
-    if tx == 0.0 and ty == 0.0:
-        return 0.0
-    path_heading = math.atan2(ty, tx)
-    horizon_steps = int(round(_config_horizon(state, v, w, dt)))   # unused stub
-    final_heading = state[2] + w * (horizon_steps * dt)
-    err = final_heading - path_heading
-    while err >  math.pi: err -= 2 * math.pi
-    while err < -math.pi: err += 2 * math.pi
-    return abs(err)
-
-
-def _config_horizon(_state, _v, _w, _dt) -> int:
-    """Hook for a future variable horizon; for now the caller passes H+1."""
-    return 0
 
 
 # ── DWA core ────────────────────────────────────────────────────────────────
 
 class DWAPlanner:
-    """Stateful DWA planner. Holds the last commanded (v, ω) for windowing."""
+    """Stateful DWA planner. Holds the last commanded ω for rate-limiting."""
 
     def __init__(self, cfg: Config, obstacle: CircleObstacle, path: Sequence[Point]):
         self.cfg = cfg
@@ -166,8 +102,6 @@ class DWAPlanner:
         self.path_xy = np.asarray(path, dtype=float)
         if self.path_xy.ndim != 2 or self.path_xy.shape[1] != 2:
             raise ValueError("path must be a sequence of (x, y) tuples")
-        # Last commanded velocities — initially zero.
-        self._last_v: float = 0.0
         self._last_w: float = 0.0
 
     # ── public API ──────────────────────────────────────────────────────────
@@ -175,45 +109,32 @@ class DWAPlanner:
     def step(self, state: State) -> DWAResult:
         """Compute one DWA step from the current robot state."""
         d = self.cfg.dwa
-        # Dynamic window — bound by both static limits and acceleration limits
-        # around the previously commanded (v, w). The acceleration window uses
-        # ``window_dt`` (a configurable lookahead) rather than the rollout
-        # horizon, so the planner is allowed to make meaningful per-step
-        # changes including emergency slow-downs.
-        v_band = d.a_max * d.window_dt
+        v = d.v_max  # constant velocity
+
+        # ω rate-limit window around the last commanded ω.
         w_band = d.alpha_max * d.window_dt
-        v_lo = max(d.v_min, self._last_v - v_band)
-        v_hi = min(d.v_max, self._last_v + v_band)
         w_lo = max(d.w_min, self._last_w - w_band)
         w_hi = min(d.w_max, self._last_w + w_band)
-        if v_hi < v_lo: v_hi = v_lo
-        if w_hi < w_lo: w_hi = w_lo
+        if w_hi < w_lo:
+            w_hi = w_lo
 
-        v_grid = np.linspace(v_lo, v_hi, d.v_samples) if d.v_samples > 1 else np.array([v_lo])
-        w_grid = np.linspace(w_lo, w_hi, d.w_samples) if d.w_samples > 1 else np.array([w_lo])
+        w_grid = (np.linspace(w_lo, w_hi, d.w_samples)
+                  if d.w_samples > 1 else np.array([0.0]))
 
         rollouts: List[Rollout] = []
-        for v in v_grid:
-            for w in w_grid:
-                ro = self._evaluate(state, float(v), float(w))
-                rollouts.append(ro)
+        for w in w_grid:
+            rollouts.append(self._evaluate(state, v, float(w)))
 
-        # Pick the best non-rejected rollout. If everything is rejected,
-        # fall back to the cheapest rejected one (so visualization still has
-        # a "chosen" candidate to highlight even in pathological cases).
         feasible = [r for r in rollouts if not r.rejected]
         chosen: Optional[Rollout]
         if feasible:
             chosen = min(feasible, key=lambda r: r.cost)
+            self._last_w = chosen.w
         else:
             chosen = min(rollouts, key=lambda r: r.cost) if rollouts else None
 
-        if chosen is not None and not chosen.rejected:
-            self._last_v = chosen.v
-            self._last_w = chosen.w
-
         return DWAResult(chosen=chosen, rollouts=rollouts,
-                         window=(v_lo, v_hi, w_lo, w_hi))
+                         window=(v, v, w_lo, w_hi))
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -221,47 +142,16 @@ class DWAPlanner:
         d = self.cfg.dwa
         xs, ys = _rollout(state, v, w, d.horizon_s, d.dt)
 
-        # Workspace bounds — soft penalty rather than hard reject. This keeps
-        # the robot from getting stuck near a wall: if every forward rollout
-        # would clip the boundary, the planner still picks the *least bad*
-        # one, allowing the robot to graze the edge while it manoeuvres.
-        ws = self.cfg.workspace
-        oob_amount = 0.0
-        if np.any(xs < ws.x_min): oob_amount += float((ws.x_min - xs).clip(min=0).sum())
-        if np.any(xs > ws.x_max): oob_amount += float((xs - ws.x_max).clip(min=0).sum())
-        if np.any(ys < ws.y_min): oob_amount += float((ws.y_min - ys).clip(min=0).sum())
-        if np.any(ys > ws.y_max): oob_amount += float((ys - ws.y_max).clip(min=0).sum())
-
-        # Wall-clear soft term: minimum distance from each rollout point to
-        # the nearest wall. Penalise when this drops below ``wall_clear_m``,
-        # ramping linearly to 1.0 as the point reaches the wall. Encourages
-        # the robot to stay clear of borders even when not actually OOB.
-        wall_clear = np.minimum.reduce([
-            xs - ws.x_min, ws.x_max - xs,
-            ys - ws.y_min, ws.y_max - ys,
-        ])
-        wall_safe = max(1e-3, d.wall_clear_m)
-        wall_cost = float(np.clip((wall_safe - wall_clear) / wall_safe,
-                                  a_min=0.0, a_max=1.0).mean())
-
-        # Obstacle check (always — independent of sensing radius).
-        # Note: we still gate the *cost contribution* by sensing radius
-        # below; rejection itself is unconditional so the robot does not
-        # crash even if obstacle is just outside its current sensing disc.
+        # Hard reject if any rollout point enters the inflated obstacle.
         if d.reject_in_inflated and self.obstacle.any_in_collision(zip(xs, ys)):
             return Rollout(v=v, w=w, xs=xs, ys=ys,
                            cost=1e6, rejected=True, reason="obstacle")
 
-        # Distance / goal terms.
-        path_d, last_idx = _path_distance_term(xs, ys, self.path_xy)
+        path_d = _path_distance_term(xs, ys, self.path_xy)
         goal_d = _goal_term(xs, ys, (self.cfg.goal.x, self.cfg.goal.y))
 
-        # Obstacle term — only contributes when robot's *current* position
-        # is within sensing radius of the obstacle (matches the rubric:
-        # "consider the obstacle if it's within the sensing radius").
-        # The term is bounded: zero once clearance exceeds safe_clear_m, and
-        # ramps to 1 as clearance drops to 0. This avoids penalising the robot
-        # for merely being *near* the obstacle while still safely clear.
+        # Soft obstacle term: only when the robot is within sensing range.
+        # Ramps from 0 (clearance ≥ safe) to 1 (touching the inflated edge).
         rx, ry, _ = state
         sense_dist = math.hypot(rx - self.obstacle.cx, ry - self.obstacle.cy)
         if sense_dist <= self.cfg.sensing.radius_m + self.obstacle.inflated_radius:
@@ -271,32 +161,10 @@ class DWAPlanner:
         else:
             obs_cost = 0.0
 
-        # Heading term.
-        n_steps = max(1, int(round(d.horizon_s / d.dt)))
-        final_heading = state[2] + w * n_steps * d.dt
-        if last_idx + 1 < self.path_xy.shape[0]:
-            tx = self.path_xy[last_idx + 1, 0] - self.path_xy[last_idx, 0]
-            ty = self.path_xy[last_idx + 1, 1] - self.path_xy[last_idx, 1]
-            path_heading = math.atan2(ty, tx) if (tx or ty) else final_heading
-        else:
-            path_heading = final_heading
-        err = final_heading - path_heading
-        while err >  math.pi: err -= 2 * math.pi
-        while err < -math.pi: err += 2 * math.pi
-        head_d = abs(err)
-
         wts = d.weights
-        # Hard out-of-bounds (high multiplier) — last-resort: the wall_cost
-        # term should usually steer the robot away well before this kicks in.
-        oob_cost = 10.0 * oob_amount
         cost = (wts.path     * path_d +
                 wts.goal     * goal_d +
-                wts.obstacle * obs_cost +
-                wts.heading  * head_d +
-                wts.wall     * wall_cost +
-                oob_cost -
-                wts.velocity * v)        # reward forward motion
-
+                wts.obstacle * obs_cost)
         return Rollout(v=v, w=w, xs=xs, ys=ys, cost=cost,
                        rejected=False, reason="")
 
@@ -323,10 +191,8 @@ def _simulate_run(cfg: Config, max_steps: int = 400) -> dict:
         result = planner.step((x, y, th))
         last_result = result
         if result.chosen is None or result.chosen.rejected:
-            # No feasible move — abort.
             break
         v, w = result.chosen.v, result.chosen.w
-        # Advance one *control* step (use the planner's dt as tick length).
         dt = cfg.dwa.dt
         th += w * dt
         x  += v * math.cos(th) * dt
