@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Assignment 4 – A* + DWA parameters
+#
+# All tunables live here. The instructor provides A, B, and the obstacle
+# position at lab time; only those three sections need to be edited then.
+# ─────────────────────────────────────────────────────────────────────────────
+
+workspace:
+  x_min: 0.0
+  x_max: 1.5
+  y_min: 0.0
+  y_max: 1.5
+
+grid:
+  resolution_m: 0.05      # cell size for the occupancy grid used by A*
+  allow_diagonal: true    # 8-connected neighbourhood
+
+start:
+  x: 0.15
+  y: 0.15
+  theta: 0.0              # initial heading (rad), 0 = facing +x
+
+goal:
+  x: 1.35
+  y: 1.35
+  tol_m: 0.10             # robot is "at the goal" once within this distance
+
+obstacle:
+  x: 0.75
+  y: 0.75
+  radius_m: 0.08          # physical radius of the obstacle
+
+robot:
+  radius_m: 0.06          # ~Duckiebot footprint half-width
+  safety_margin_m: 0.04   # added to robot radius before inflating obstacles
+  wheel_base_m: 0.10      # distance between left/right wheels (Duckiebot)
+  wheel_radius_m: 0.0318
+  ticks_per_rev: 135      # encoder ticks per wheel revolution
+
+sensing:
+  radius_m: 0.40          # cosmetic disc + obstacle awareness gate
+
+dwa:
+  v_min: 0.0              # m/s
+  v_max: 0.25
+  w_min: -2.0             # rad/s
+  w_max:  2.0
+  v_samples: 7
+  w_samples: 11
+  a_max: 0.5              # m/s^2  — bounds the dynamic window from current v
+  alpha_max: 3.0          # rad/s^2 — bounds the dynamic window from current ω
+  horizon_s: 1.5
+  dt: 0.1
+  weights:
+    path: 1.0             # cost of distance to global path
+    goal: 0.6             # cost of distance to goal
+    obstacle: 2.5         # cost of getting close to obstacle (within safe_clear_m)
+    heading: 0.3          # cost of misalignment with path tangent
+    velocity: 2.0         # reward for forward speed (encourages progress)
+  safe_clear_m: 0.10      # obstacle cost is 0 once clearance exceeds this
+  reject_in_inflated: true  # hard-reject rollouts entering the inflated disc
+
+control:
+  rate_hz: 10
+  linear_max: 0.25
+  angular_max: 2.0
+
+viz:
+  rate_hz: 5
+  show_rejected: true     # render rollouts that entered the inflated disc
+
+path:
+  densify_step_m: 0.02    # interpolate A* waypoints to this spacing

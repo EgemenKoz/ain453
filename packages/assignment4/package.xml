@@ -1,0 +1,22 @@
+<package format="2">
+  <name>assignment4</name>
+  <version>0.0.1</version>
+  <description>
+    A* global path planning with DWA-based local obstacle avoidance on the
+    Duckiebot. The robot drives from a start point A to a goal point B,
+    following an A*-generated path while avoiding a circular obstacle using
+    a custom Dynamic Window Approach planner. All parameters are configured
+    via a YAML file.
+  </description>
+  <maintainer email="todo@example.com">Student</maintainer>
+  <license>None</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>duckietown_msgs</depend>
+</package>
