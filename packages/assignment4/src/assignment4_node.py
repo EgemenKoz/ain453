@@ -107,6 +107,9 @@ class Assignment4Node(DTROS):
         self._pose_src = PoseSource(
             self._vehicle,
             (self.cfg.start.x, self.cfg.start.y, self.cfg.start.theta),
+            wheel_radius_m=self.cfg.robot.wheel_radius_m,
+            wheel_base_m=self.cfg.robot.wheel_base_m,
+            ticks_per_rev=self.cfg.robot.ticks_per_rev,
         )
         self._renderer = Renderer(self.cfg, self._waypoints, self._obstacle)
         self._renderer.fig.suptitle(
@@ -143,7 +146,7 @@ class Assignment4Node(DTROS):
             "[A4] Topics:  cmd=%s  viz=%s",
             self._cmd_pub.resolved_name, self._viz_pub.resolved_name,
         )
-        rospy.loginfo("[A4] Waiting for first odometry message …")
+        rospy.loginfo("[A4] Waiting for first encoder ticks from both wheels …")
 
     # ── Control ─────────────────────────────────────────────────────────────
 

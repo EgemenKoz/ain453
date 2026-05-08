@@ -1,25 +1,29 @@
 """
-pose_source.py – World-frame pose for the Duckiebot, from /odometry_node/odometry.
+pose_source.py – World-frame pose for the Duckiebot from wheel encoders.
 
-The Duckiebot stack already publishes integrated wheel odometry as a
-nav_msgs/Odometry on ``/<robot>/odometry_node/odometry``; we subscribe to
-that and convert the *odometry-frame* pose into the assignment's world
-frame using a single rigid transform that is locked in on the first
-message.
+The /<vehicle>/odometry_node/odometry topic is unreliable on stock Duckiebot
+images (the node is sometimes not running and the topic only updates while
+the robot is moving). The wheel encoder tick topics are always available,
+so we integrate differential-drive odometry ourselves.
 
 Convention
 ----------
-At startup we assume the robot is physically placed at the configured
-start point ``A`` facing ``start.theta``. The first odometry message we
-receive defines the odometry origin. From that point on::
+Robot is physically placed at the configured start point ``A`` facing
+``start.theta`` *before the node starts*. The first encoder tick we see
+from each wheel becomes the zero reference; everything afterwards is a
+delta integrated through the standard unicycle update.
 
-    world_pose = T_world←odom(odom_pose)
+World-frame update on each new tick (either wheel):
 
-where ``T_world←odom`` is the rigid transform that maps the initial
-odom_pose to ``(start.x, start.y, start.theta)``.
+    Δs_left  = (ticks_left  − ticks_left_prev)  / N · 2π · R
+    Δs_right = (ticks_right − ticks_right_prev) / N · 2π · R
+    Δs       = (Δs_left + Δs_right) / 2
+    Δθ       = (Δs_right − Δs_left) / L
+    x  += Δs · cos(θ + Δθ/2)
+    y  += Δs · sin(θ + Δθ/2)
+    θ  += Δθ
 
-If the odometry service is unavailable, ``get()`` returns ``None`` until
-the first message arrives.
+where N = ticks_per_rev, R = wheel_radius_m, L = wheel_base_m.
 """
 
 from __future__ import annotations
@@ -30,105 +34,133 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import rospy
-from nav_msgs.msg import Odometry
+from duckietown_msgs.msg import WheelEncoderStamped
 
 State = Tuple[float, float, float]
 
 
-def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
-    siny = 2.0 * (qw * qz + qx * qy)
-    cosy = 1.0 - 2.0 * (qy * qy + qz * qz)
-    return math.atan2(siny, cosy)
-
-
 @dataclass
-class _OdomFrame:
-    x: float
-    y: float
-    yaw: float
+class _WheelState:
+    last_ticks: Optional[int] = None  # cumulative tick count at last callback
+    distance: float = 0.0             # cumulative distance since first tick
+
+    def update(self, ticks: int, ticks_per_rev: int, wheel_radius: float) -> float:
+        """Return Δdistance for *this* tick callback (0 on the very first one)."""
+        if self.last_ticks is None:
+            self.last_ticks = ticks
+            return 0.0
+        d_ticks = ticks - self.last_ticks
+        self.last_ticks = ticks
+        d_dist = d_ticks / ticks_per_rev * 2.0 * math.pi * wheel_radius
+        self.distance += d_dist
+        return d_dist
 
 
 class PoseSource:
-    """Thread-safe source of world-frame pose, anchored on first odom message."""
+    """Thread-safe wheel-encoder odometry, anchored at the configured start pose."""
 
-    def __init__(self, vehicle_name: str, start: State):
-        self._start = start  # (x_world, y_world, yaw_world) at robot's start
+    def __init__(
+        self,
+        vehicle_name: str,
+        start: State,
+        wheel_radius_m: float,
+        wheel_base_m: float,
+        ticks_per_rev: int,
+    ):
+        self._wheel_radius = wheel_radius_m
+        self._wheel_base = wheel_base_m
+        self._ticks_per_rev_default = ticks_per_rev
+
         self._lock = threading.Lock()
-        self._latest: Optional[_OdomFrame] = None
-        self._origin: Optional[_OdomFrame] = None  # set on first message
+
+        # Pose state (in world frame).
+        self._x, self._y, self._theta = start
+
+        # Per-wheel state.
+        self._left = _WheelState()
+        self._right = _WheelState()
+
+        # Bookkeeping for pose updates: distances captured at the last fused update.
+        self._left_at_last_fuse: float = 0.0
+        self._right_at_last_fuse: float = 0.0
+        self._has_left = False
+        self._has_right = False
 
         prefix = f"/{vehicle_name}" if vehicle_name else ""
-        self._topic = f"{prefix}/odometry_node/odometry"
-        self._sub = rospy.Subscriber(
-            self._topic, Odometry, self._cb, queue_size=1, buff_size=2 ** 16,
+        self._left_topic = f"{prefix}/left_wheel_encoder_node/tick"
+        self._right_topic = f"{prefix}/right_wheel_encoder_node/tick"
+        self._sub_left = rospy.Subscriber(
+            self._left_topic, WheelEncoderStamped, self._left_cb,
+            queue_size=10, buff_size=2 ** 16,
         )
-        rospy.loginfo("[Pose] Subscribed to %s", self._topic)
+        self._sub_right = rospy.Subscriber(
+            self._right_topic, WheelEncoderStamped, self._right_cb,
+            queue_size=10, buff_size=2 ** 16,
+        )
+        rospy.loginfo("[Pose] Subscribed to %s", self._left_topic)
+        rospy.loginfo("[Pose] Subscribed to %s", self._right_topic)
+        rospy.loginfo(
+            "[Pose] Anchored start=(%.3f, %.3f, %.1f°)  "
+            "R=%.4f m  L=%.4f m  N=%d ticks/rev",
+            start[0], start[1], math.degrees(start[2]),
+            wheel_radius_m, wheel_base_m, ticks_per_rev,
+        )
 
     # ── public API ──────────────────────────────────────────────────────────
 
     def is_ready(self) -> bool:
         with self._lock:
-            return self._origin is not None and self._latest is not None
+            return self._has_left and self._has_right
 
     def get(self) -> Optional[State]:
-        """Return current world pose (x, y, yaw), or None if no odom yet."""
         with self._lock:
-            if self._origin is None or self._latest is None:
+            if not (self._has_left and self._has_right):
                 return None
-            return self._world_pose(self._origin, self._latest, self._start)
-
-    def reset_origin(self) -> None:
-        """Re-anchor: treat the next odom message as the origin again."""
-        with self._lock:
-            self._origin = None
-            self._latest = None
+            return (self._x, self._y, self._theta)
 
     @property
-    def topic(self) -> str:
-        return self._topic
+    def topics(self) -> Tuple[str, str]:
+        return self._left_topic, self._right_topic
 
     # ── internals ───────────────────────────────────────────────────────────
 
-    def _cb(self, msg: Odometry) -> None:
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-        frame = _OdomFrame(x=p.x, y=p.y, yaw=_yaw_from_quat(q.x, q.y, q.z, q.w))
+    def _left_cb(self, msg: WheelEncoderStamped) -> None:
         with self._lock:
-            self._latest = frame
-            if self._origin is None:
-                self._origin = frame
-                rospy.loginfo(
-                    "[Pose] Anchored origin: odom=(%.3f, %.3f, %.1f°) "
-                    "→ world=(%.3f, %.3f, %.1f°)",
-                    frame.x, frame.y, math.degrees(frame.yaw),
-                    self._start[0], self._start[1], math.degrees(self._start[2]),
-                )
+            n = self._ticks_per_rev(msg)
+            self._left.update(int(msg.data), n, self._wheel_radius)
+            self._has_left = True
+            self._fuse_locked()
 
-    @staticmethod
-    def _world_pose(origin: _OdomFrame, latest: _OdomFrame, start: State) -> State:
-        # Displacement in odom frame
-        dx_o = latest.x - origin.x
-        dy_o = latest.y - origin.y
+    def _right_cb(self, msg: WheelEncoderStamped) -> None:
+        with self._lock:
+            n = self._ticks_per_rev(msg)
+            self._right.update(int(msg.data), n, self._wheel_radius)
+            self._has_right = True
+            self._fuse_locked()
 
-        # Express displacement in robot's *initial* body frame
-        c0 = math.cos(-origin.yaw)
-        s0 = math.sin(-origin.yaw)
-        dx_b = dx_o * c0 - dy_o * s0
-        dy_b = dx_o * s0 + dy_o * c0
+    def _ticks_per_rev(self, msg: WheelEncoderStamped) -> int:
+        n = int(getattr(msg, "resolution", 0)) or 0
+        return n if n > 0 else self._ticks_per_rev_default
 
-        # Rotate body-frame displacement into world (the body frame is rotated
-        # by start.theta relative to world)
-        cs = math.cos(start[2])
-        ss = math.sin(start[2])
-        x_w = start[0] + dx_b * cs - dy_b * ss
-        y_w = start[1] + dx_b * ss + dy_b * cs
+    def _fuse_locked(self) -> None:
+        """Apply the differential-drive update from the latest wheel distances.
 
-        # Yaw is the same delta, added to the world-start yaw
-        dyaw = latest.yaw - origin.yaw
+        Caller must hold ``self._lock``.
+        """
+        if not (self._has_left and self._has_right):
+            return
+        d_left = self._left.distance - self._left_at_last_fuse
+        d_right = self._right.distance - self._right_at_last_fuse
+        self._left_at_last_fuse = self._left.distance
+        self._right_at_last_fuse = self._right.distance
+
+        d_s = 0.5 * (d_left + d_right)
+        d_th = (d_right - d_left) / self._wheel_base
+        # Mid-point integration for better accuracy on curves.
+        th_mid = self._theta + 0.5 * d_th
+        self._x += d_s * math.cos(th_mid)
+        self._y += d_s * math.sin(th_mid)
+        self._theta += d_th
         # normalise to [-pi, pi]
-        while dyaw > math.pi: dyaw -= 2 * math.pi
-        while dyaw < -math.pi: dyaw += 2 * math.pi
-        yaw_w = start[2] + dyaw
-        while yaw_w > math.pi: yaw_w -= 2 * math.pi
-        while yaw_w < -math.pi: yaw_w += 2 * math.pi
-        return (x_w, y_w, yaw_w)
+        while self._theta > math.pi:  self._theta -= 2.0 * math.pi
+        while self._theta < -math.pi: self._theta += 2.0 * math.pi
