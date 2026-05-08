@@ -2,19 +2,11 @@
   <arg name="veh" default="$(env VEHICLE_NAME)"/>
   <arg name="config" default="$(find assignment4)/config/params.yaml"/>
 
-  <node name="assignment4_controller"
+  <node name="assignment4_node"
         pkg="assignment4"
         type="assignment4.py"
         output="screen"
         required="true">
-    <param name="config_path" value="$(arg config)"/>
-    <param name="vehicle_name" value="$(arg veh)"/>
-  </node>
-
-  <node name="assignment4_visualizer"
-        pkg="assignment4"
-        type="visualizer_node.py"
-        output="screen">
     <param name="config_path" value="$(arg config)"/>
     <param name="vehicle_name" value="$(arg veh)"/>
   </node>
