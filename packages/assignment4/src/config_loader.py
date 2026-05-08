@@ -65,6 +65,9 @@ class Robot:
     wheel_base_m: float
     wheel_radius_m: float
     ticks_per_rev: int
+    left_sign: float = 1.0
+    right_sign: float = 1.0
+    pose_log_throttle_s: float = 0.0
 
     @property
     def inflated_radius_m(self) -> float:
@@ -95,6 +98,7 @@ class DWA:
     w_samples: int
     a_max: float
     alpha_max: float
+    window_dt: float
     horizon_s: float
     dt: float
     weights: DWAWeights
@@ -154,6 +158,7 @@ def _build(raw: Dict[str, Any]) -> Config:
             w_samples=dwa_raw["w_samples"],
             a_max=dwa_raw["a_max"],
             alpha_max=dwa_raw["alpha_max"],
+            window_dt=dwa_raw.get("window_dt", 0.5),
             horizon_s=dwa_raw["horizon_s"],
             dt=dwa_raw["dt"],
             weights=DWAWeights(**dwa_raw["weights"]),

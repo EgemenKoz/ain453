@@ -66,10 +66,17 @@ class PoseSource:
         wheel_radius_m: float,
         wheel_base_m: float,
         ticks_per_rev: int,
+        left_sign: float = 1.0,
+        right_sign: float = 1.0,
+        log_throttle_s: float = 0.0,
     ):
         self._wheel_radius = wheel_radius_m
         self._wheel_base = wheel_base_m
         self._ticks_per_rev_default = ticks_per_rev
+        self._left_sign = float(left_sign)
+        self._right_sign = float(right_sign)
+        self._log_throttle_s = float(log_throttle_s)
+        self._last_log_t: float = 0.0
 
         self._lock = threading.Lock()
 
@@ -127,14 +134,16 @@ class PoseSource:
     def _left_cb(self, msg: WheelEncoderStamped) -> None:
         with self._lock:
             n = self._ticks_per_rev(msg)
-            self._left.update(int(msg.data), n, self._wheel_radius)
+            d = self._left.update(int(msg.data), n, self._wheel_radius)
+            self._left.distance += (self._left_sign - 1.0) * d  # apply sign
             self._has_left = True
             self._fuse_locked()
 
     def _right_cb(self, msg: WheelEncoderStamped) -> None:
         with self._lock:
             n = self._ticks_per_rev(msg)
-            self._right.update(int(msg.data), n, self._wheel_radius)
+            d = self._right.update(int(msg.data), n, self._wheel_radius)
+            self._right.distance += (self._right_sign - 1.0) * d
             self._has_right = True
             self._fuse_locked()
 
@@ -164,3 +173,15 @@ class PoseSource:
         # normalise to [-pi, pi]
         while self._theta > math.pi:  self._theta -= 2.0 * math.pi
         while self._theta < -math.pi: self._theta += 2.0 * math.pi
+
+        # Throttled debug log (helps verify integration direction in the lab).
+        if self._log_throttle_s > 0.0:
+            now = rospy.Time.now().to_sec()
+            if now - self._last_log_t >= self._log_throttle_s:
+                self._last_log_t = now
+                rospy.loginfo(
+                    "[Pose] dL=%+.4f dR=%+.4f → dS=%+.4f dθ=%+.3f rad   "
+                    "pose=(%.3f, %.3f, %.1f°)",
+                    d_left, d_right, d_s, d_th,
+                    self._x, self._y, math.degrees(self._theta),
+                )

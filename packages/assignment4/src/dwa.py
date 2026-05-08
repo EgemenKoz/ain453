@@ -154,11 +154,16 @@ class DWAPlanner:
         """Compute one DWA step from the current robot state."""
         d = self.cfg.dwa
         # Dynamic window — bound by both static limits and acceleration limits
-        # around the previously commanded (v, w).
-        v_lo = max(d.v_min, self._last_v - d.a_max * d.dt * d.horizon_s)
-        v_hi = min(d.v_max, self._last_v + d.a_max * d.dt * d.horizon_s)
-        w_lo = max(d.w_min, self._last_w - d.alpha_max * d.dt * d.horizon_s)
-        w_hi = min(d.w_max, self._last_w + d.alpha_max * d.dt * d.horizon_s)
+        # around the previously commanded (v, w). The acceleration window uses
+        # ``window_dt`` (a configurable lookahead) rather than the rollout
+        # horizon, so the planner is allowed to make meaningful per-step
+        # changes including emergency slow-downs.
+        v_band = d.a_max * d.window_dt
+        w_band = d.alpha_max * d.window_dt
+        v_lo = max(d.v_min, self._last_v - v_band)
+        v_hi = min(d.v_max, self._last_v + v_band)
+        w_lo = max(d.w_min, self._last_w - w_band)
+        w_hi = min(d.w_max, self._last_w + w_band)
         if v_hi < v_lo: v_hi = v_lo
         if w_hi < w_lo: w_hi = w_lo
 

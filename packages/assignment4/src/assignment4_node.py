@@ -110,6 +110,9 @@ class Assignment4Node(DTROS):
             wheel_radius_m=self.cfg.robot.wheel_radius_m,
             wheel_base_m=self.cfg.robot.wheel_base_m,
             ticks_per_rev=self.cfg.robot.ticks_per_rev,
+            left_sign=self.cfg.robot.left_sign,
+            right_sign=self.cfg.robot.right_sign,
+            log_throttle_s=self.cfg.robot.pose_log_throttle_s,
         )
         self._renderer = Renderer(self.cfg, self._waypoints, self._obstacle)
         self._renderer.fig.suptitle(
