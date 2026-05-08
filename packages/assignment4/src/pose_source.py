@@ -120,9 +120,14 @@ class PoseSource:
             return self._has_left and self._has_right
 
     def get(self) -> Optional[State]:
+        """Return latest pose. Triggers a fuse so each call reflects the
+        most recent encoder data from *both* wheels — this eliminates the
+        per-callback wobble we used to get when only one wheel had updated.
+        """
         with self._lock:
             if not (self._has_left and self._has_right):
                 return None
+            self._fuse_locked()
             return (self._x, self._y, self._theta)
 
     @property
@@ -137,7 +142,8 @@ class PoseSource:
             d = self._left.update(int(msg.data), n, self._wheel_radius)
             self._left.distance += (self._left_sign - 1.0) * d  # apply sign
             self._has_left = True
-            self._fuse_locked()
+            # Fusion is deferred until get() so we always combine both
+            # wheels' freshest data.
 
     def _right_cb(self, msg: WheelEncoderStamped) -> None:
         with self._lock:
@@ -145,7 +151,6 @@ class PoseSource:
             d = self._right.update(int(msg.data), n, self._wheel_radius)
             self._right.distance += (self._right_sign - 1.0) * d
             self._has_right = True
-            self._fuse_locked()
 
     def _ticks_per_rev(self, msg: WheelEncoderStamped) -> int:
         n = int(getattr(msg, "resolution", 0)) or 0

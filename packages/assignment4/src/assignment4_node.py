@@ -69,8 +69,14 @@ Point = Tuple[float, float]
 # State machine
 _INIT = "INIT"
 _RUNNING = "RUNNING"
+_RECOVERING = "RECOVERING"
 _GOAL_REACHED = "GOAL_REACHED"
 _ABORT = "ABORT"
+
+# Recovery: small in-place rotation toward goal when DWA can't find a feasible
+# move. Prevents the robot from giving up at the first dead-end.
+_RECOVERY_OMEGA = 1.0      # rad/s
+_RECOVERY_MAX_SEC = 2.5    # if recovery doesn't help in this long, give up
 
 
 class Assignment4Node(DTROS):
@@ -133,6 +139,8 @@ class Assignment4Node(DTROS):
         self._snap: Optional[Snapshot] = None
         self._trace: List[Point] = []
         self._step_idx: int = 0
+        self._recovery_t0: Optional[rospy.Time] = None
+        self._recovery_dir: float = 1.0   # +1 = CCW, -1 = CW
 
         # ── Timers ──────────────────────────────────────────────────────────
         rospy.Timer(
@@ -186,14 +194,14 @@ class Assignment4Node(DTROS):
         chosen: Optional[Rollout] = result.chosen
 
         if chosen is None or chosen.rejected:
-            self._state = _ABORT
-            self._cmd_pub.publish(self._stop_cmd())
-            rospy.logwarn(
-                "[A4] No feasible DWA move (every rollout rejected). Stopping.",
-            )
-            self._cache_snapshot(pose, list(result.rollouts), chosen,
-                                 info="ABORT: no feasible move")
+            self._enter_or_continue_recovery(pose, result)
             return
+
+        # Successful DWA decision — leave recovery if we were in it.
+        if self._state == _RECOVERING:
+            rospy.loginfo("[A4] Recovery succeeded, resuming RUNNING.")
+            self._state = _RUNNING
+            self._recovery_t0 = None
 
         # Publish command, clamped to control limits as a safety net.
         v = max(0.0, min(self.cfg.control.linear_max, float(chosen.v)))
@@ -218,6 +226,51 @@ class Assignment4Node(DTROS):
             "[A4] pose=(%.2f, %.2f, %.0f°)  cmd  v=%.2f  ω=%+.2f  d_goal=%.2f",
             x, y, math.degrees(pose[2]), v, w, d_goal,
         )
+
+    # ── Recovery ────────────────────────────────────────────────────────────
+
+    def _enter_or_continue_recovery(self, pose: State, result: DWAResult) -> None:
+        """When DWA produces no feasible move, rotate in place toward the
+        goal and try again. Gives up only after _RECOVERY_MAX_SEC elapses,
+        so we don't spin forever in a true dead-end.
+        """
+        now = rospy.Time.now()
+        if self._state != _RECOVERING:
+            self._state = _RECOVERING
+            self._recovery_t0 = now
+            # Choose rotation direction: turn toward the goal.
+            dx = self.cfg.goal.x - pose[0]
+            dy = self.cfg.goal.y - pose[1]
+            target_heading = math.atan2(dy, dx)
+            err = target_heading - pose[2]
+            while err > math.pi:  err -= 2 * math.pi
+            while err < -math.pi: err += 2 * math.pi
+            self._recovery_dir = 1.0 if err >= 0.0 else -1.0
+            rospy.logwarn(
+                "[A4] No feasible DWA move — entering RECOVERY "
+                "(rotating %s toward goal).",
+                "CCW" if self._recovery_dir > 0 else "CW",
+            )
+
+        elapsed = (now - self._recovery_t0).to_sec() if self._recovery_t0 else 0.0
+        if elapsed > _RECOVERY_MAX_SEC:
+            self._state = _ABORT
+            self._cmd_pub.publish(self._stop_cmd())
+            rospy.logerr(
+                "[A4] Recovery timed out after %.1fs. Giving up (ABORT).", elapsed,
+            )
+            self._cache_snapshot(pose, list(result.rollouts), result.chosen,
+                                 info="ABORT: recovery timed out")
+            return
+
+        # Issue an in-place rotation command.
+        cmd = Twist2DStamped()
+        cmd.header.stamp = now
+        cmd.v = 0.0
+        cmd.omega = self._recovery_dir * _RECOVERY_OMEGA
+        self._cmd_pub.publish(cmd)
+        self._cache_snapshot(pose, list(result.rollouts), result.chosen,
+                             info=f"RECOVERY {elapsed:.1f}s")
 
     # ── Visualisation ───────────────────────────────────────────────────────
 

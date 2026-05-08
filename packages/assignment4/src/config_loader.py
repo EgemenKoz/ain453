@@ -86,6 +86,7 @@ class DWAWeights:
     obstacle: float
     heading: float
     velocity: float
+    wall: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,9 @@ class DWA:
     dt: float
     weights: DWAWeights
     safe_clear_m: float
+    wall_clear_m: float
     reject_in_inflated: bool
+    carrot_lookahead_m: float
 
 
 @dataclass(frozen=True)
@@ -163,7 +166,9 @@ def _build(raw: Dict[str, Any]) -> Config:
             dt=dwa_raw["dt"],
             weights=DWAWeights(**dwa_raw["weights"]),
             safe_clear_m=dwa_raw["safe_clear_m"],
+            wall_clear_m=dwa_raw.get("wall_clear_m", 0.12),
             reject_in_inflated=dwa_raw["reject_in_inflated"],
+            carrot_lookahead_m=dwa_raw.get("carrot_lookahead_m", 0.30),
         ),
         control=Control(**raw["control"]),
         viz=Viz(**raw["viz"]),

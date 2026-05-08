@@ -61,8 +61,11 @@ dwa:
     obstacle: 2.5         # cost of getting close to obstacle (within safe_clear_m)
     heading: 0.3          # cost of misalignment with path tangent
     velocity: 2.0         # reward for forward speed (encourages progress)
+    wall: 3.0             # cost of approaching workspace borders (within wall_clear_m)
   safe_clear_m: 0.10      # obstacle cost is 0 once clearance exceeds this
+  wall_clear_m: 0.12      # wall cost is 0 once distance to nearest wall exceeds this
   reject_in_inflated: true  # hard-reject rollouts entering the inflated disc
+  carrot_lookahead_m: 0.30  # reserved (unused at the moment)
 
 control:
   rate_hz: 10

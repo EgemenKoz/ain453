@@ -97,9 +97,31 @@ def _path_distance_term(xs: np.ndarray, ys: np.ndarray,
     return float(np.sqrt(min_sq).mean()), last_idx
 
 
-def _goal_term(xs: np.ndarray, ys: np.ndarray, goal: Point) -> float:
-    """Euclidean distance from rollout *endpoint* to the goal."""
-    return math.hypot(xs[-1] - goal[0], ys[-1] - goal[1])
+def _goal_term(xs: np.ndarray, ys: np.ndarray, target: Point) -> float:
+    """Euclidean distance from rollout *endpoint* to *target* (goal or carrot)."""
+    return math.hypot(xs[-1] - target[0], ys[-1] - target[1])
+
+
+def _carrot_point(state: State, path_xy: np.ndarray, lookahead_m: float) -> Point:
+    """Pick a target point on the path: walk lookahead_m ahead from the
+    waypoint nearest the robot. Falls back to the final waypoint when the
+    look-ahead exceeds the remaining path length.
+    """
+    rx, ry = state[0], state[1]
+    diffs = path_xy - np.array([rx, ry])
+    dists = np.einsum("ij,ij->i", diffs, diffs)   # squared distance per waypoint
+    nearest = int(dists.argmin())
+    accum = 0.0
+    idx = nearest
+    n = path_xy.shape[0]
+    while idx + 1 < n and accum < lookahead_m:
+        seg = math.hypot(
+            path_xy[idx + 1, 0] - path_xy[idx, 0],
+            path_xy[idx + 1, 1] - path_xy[idx, 1],
+        )
+        accum += seg
+        idx += 1
+    return (float(path_xy[idx, 0]), float(path_xy[idx, 1]))
 
 
 def _heading_term(state: State, v: float, w: float, dt: float,
@@ -199,12 +221,28 @@ class DWAPlanner:
         d = self.cfg.dwa
         xs, ys = _rollout(state, v, w, d.horizon_s, d.dt)
 
-        # Workspace bounds — reject rollouts that exit the workspace.
+        # Workspace bounds — soft penalty rather than hard reject. This keeps
+        # the robot from getting stuck near a wall: if every forward rollout
+        # would clip the boundary, the planner still picks the *least bad*
+        # one, allowing the robot to graze the edge while it manoeuvres.
         ws = self.cfg.workspace
-        if (np.any(xs < ws.x_min) or np.any(xs > ws.x_max) or
-                np.any(ys < ws.y_min) or np.any(ys > ws.y_max)):
-            return Rollout(v=v, w=w, xs=xs, ys=ys,
-                           cost=1e6, rejected=True, reason="oob")
+        oob_amount = 0.0
+        if np.any(xs < ws.x_min): oob_amount += float((ws.x_min - xs).clip(min=0).sum())
+        if np.any(xs > ws.x_max): oob_amount += float((xs - ws.x_max).clip(min=0).sum())
+        if np.any(ys < ws.y_min): oob_amount += float((ws.y_min - ys).clip(min=0).sum())
+        if np.any(ys > ws.y_max): oob_amount += float((ys - ws.y_max).clip(min=0).sum())
+
+        # Wall-clear soft term: minimum distance from each rollout point to
+        # the nearest wall. Penalise when this drops below ``wall_clear_m``,
+        # ramping linearly to 1.0 as the point reaches the wall. Encourages
+        # the robot to stay clear of borders even when not actually OOB.
+        wall_clear = np.minimum.reduce([
+            xs - ws.x_min, ws.x_max - xs,
+            ys - ws.y_min, ws.y_max - ys,
+        ])
+        wall_safe = max(1e-3, d.wall_clear_m)
+        wall_cost = float(np.clip((wall_safe - wall_clear) / wall_safe,
+                                  a_min=0.0, a_max=1.0).mean())
 
         # Obstacle check (always — independent of sensing radius).
         # Note: we still gate the *cost contribution* by sensing radius
@@ -248,10 +286,15 @@ class DWAPlanner:
         head_d = abs(err)
 
         wts = d.weights
+        # Hard out-of-bounds (high multiplier) — last-resort: the wall_cost
+        # term should usually steer the robot away well before this kicks in.
+        oob_cost = 10.0 * oob_amount
         cost = (wts.path     * path_d +
                 wts.goal     * goal_d +
                 wts.obstacle * obs_cost +
-                wts.heading  * head_d -
+                wts.heading  * head_d +
+                wts.wall     * wall_cost +
+                oob_cost -
                 wts.velocity * v)        # reward forward motion
 
         return Rollout(v=v, w=w, xs=xs, ys=ys, cost=cost,
