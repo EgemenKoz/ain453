@@ -78,6 +78,12 @@ _ABORT = "ABORT"
 _RECOVERY_OMEGA = 1.0      # rad/s
 _RECOVERY_MAX_SEC = 2.5    # if recovery doesn't help in this long, give up
 
+# "Stuck near goal" detection: if the robot has been close to the goal but
+# stationary (no pose change) for this long, declare goal reached. Handles
+# encoder dropouts and physical stuck-against-something scenarios.
+_NEAR_GOAL_FACTOR = 2.0    # x tolerance: robot is "near" if d_goal < tol*factor
+_STALE_POSE_SEC = 2.0
+
 
 class Assignment4Node(DTROS):
 
@@ -141,6 +147,9 @@ class Assignment4Node(DTROS):
         self._step_idx: int = 0
         self._recovery_t0: Optional[rospy.Time] = None
         self._recovery_dir: float = 1.0   # +1 = CCW, -1 = CW
+        # Stuck-near-goal tracking
+        self._last_pose: Optional[State] = None
+        self._last_pose_change_t: Optional[rospy.Time] = None
 
         # ── Timers ──────────────────────────────────────────────────────────
         rospy.Timer(
@@ -187,6 +196,27 @@ class Assignment4Node(DTROS):
             self._cmd_pub.publish(self._stop_cmd())
             rospy.loginfo("[A4] *** Goal reached at d=%.3f m ***", d_goal)
             self._cache_snapshot(pose, [], None, info="*** goal reached ***")
+            return
+
+        # Stuck-near-goal: if the pose hasn't changed for a while AND we're
+        # within a couple of tolerances of the goal, declare success. Saves
+        # us from spinning forever when encoders drop out at the finish line.
+        now = rospy.Time.now()
+        if self._last_pose is None or self._pose_diff(pose, self._last_pose) > 0.005:
+            self._last_pose = pose
+            self._last_pose_change_t = now
+        elif (self._last_pose_change_t is not None
+              and (now - self._last_pose_change_t).to_sec() >= _STALE_POSE_SEC
+              and d_goal <= self.cfg.goal.tol_m * _NEAR_GOAL_FACTOR):
+            self._state = _GOAL_REACHED
+            self._cmd_pub.publish(self._stop_cmd())
+            rospy.logwarn(
+                "[A4] *** Goal reached (stuck-near-goal at d=%.3f m, "
+                "no motion for %.1f s) ***",
+                d_goal, _STALE_POSE_SEC,
+            )
+            self._cache_snapshot(pose, [], None,
+                                 info="*** goal reached (stuck) ***")
             return
 
         # Run DWA on the latest pose.
@@ -319,6 +349,10 @@ class Assignment4Node(DTROS):
         )
         with self._snap_lock:
             self._snap = snap
+
+    @staticmethod
+    def _pose_diff(a: State, b: State) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1])
 
     @staticmethod
     def _stop_cmd() -> Twist2DStamped:

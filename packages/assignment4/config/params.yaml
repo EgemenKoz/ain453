@@ -23,7 +23,8 @@ start:
 goal:
   x: 1.35
   y: 1.35
-  tol_m: 0.10             # robot is "at the goal" once within this distance
+  tol_m: 0.15             # robot is "at the goal" once within this distance
+                          # (loosened from 0.10 — pose drift makes 10cm too tight)
 
 obstacle:
   x: 0.75
@@ -61,9 +62,12 @@ dwa:
     obstacle: 2.5         # cost of getting close to obstacle (within safe_clear_m)
     heading: 0.3          # cost of misalignment with path tangent
     velocity: 2.0         # reward for forward speed (encourages progress)
-    wall: 3.0             # cost of approaching workspace borders (within wall_clear_m)
+    wall: 5.0             # cost of approaching workspace borders (within wall_clear_m)
+                          # NOTE: must allow goal to be reachable — see wall_clear_m
   safe_clear_m: 0.10      # obstacle cost is 0 once clearance exceeds this
-  wall_clear_m: 0.12      # wall cost is 0 once distance to nearest wall exceeds this
+  wall_clear_m: 0.13      # wall cost is 0 once distance to nearest wall exceeds this
+                          # MUST be < distance from goal to nearest wall (here goal
+                          # is 0.15 m from wall, so 0.13 m gives a small margin)
   reject_in_inflated: true  # hard-reject rollouts entering the inflated disc
   carrot_lookahead_m: 0.30  # reserved (unused at the moment)
 
