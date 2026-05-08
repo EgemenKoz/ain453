@@ -221,8 +221,11 @@ class Renderer:
 
 # ── Standalone demo: closed-loop sim animated frame-by-frame ────────────────
 
-def _run_demo(out_path: str = "/tmp/assignment4_viz.gif",
+def _run_demo(out_path: Optional[str] = None,
               max_steps: int = 200) -> None:
+    if out_path is None:
+        from pathlib import Path
+        out_path = str(Path(__file__).resolve().parents[1] / "output" / "run.gif")
     """Run the full sim with the renderer and save an animated GIF."""
     import math
     import matplotlib.animation as animation

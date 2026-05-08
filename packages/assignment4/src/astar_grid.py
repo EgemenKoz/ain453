@@ -17,6 +17,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -235,6 +236,6 @@ if __name__ == "__main__":
         ax.add_patch(circ)
         ax.grid(True, alpha=0.3)
         ax.legend(loc="lower right")
-        out = "/tmp/assignment4_astar.png"
+        out = str(Path(__file__).resolve().parents[1] / "output" / "astar.png")
         fig.savefig(out, dpi=120, bbox_inches="tight")
         print(f"plot saved    : {out}")

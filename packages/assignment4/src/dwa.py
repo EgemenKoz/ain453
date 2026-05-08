@@ -350,6 +350,7 @@ if __name__ == "__main__":
                         color="#ff7f0e", lw=2.0, label="chosen rollout")
 
         ax.legend(loc="lower right", fontsize=9)
-        out = "/tmp/assignment4_dwa.png"
+        from pathlib import Path
+        out = str(Path(__file__).resolve().parents[1] / "output" / "dwa.png")
         fig.savefig(out, dpi=120, bbox_inches="tight")
         print(f"plot saved   : {out}")
