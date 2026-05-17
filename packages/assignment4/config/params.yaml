@@ -4,6 +4,7 @@
 # Cost: path + goal + obstacle.  Velocity is constant (DWA only samples ω).
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Map dimensions taken from A4.md §2: workspace ≈ 1.5 m × 1.5 m.
 workspace:
   x_min: 0.0
   x_max: 1.5
@@ -71,3 +72,18 @@ viz:
 
 path:
   densify_step_m: 0.02
+
+# ─── Bonus (Task 5) ──────────────────────────────────────────────────────────
+# When enabled, the planner starts with NO known obstacle and only adds one
+# after the front-center ToF sensor reports a hit closer than
+# `detect_distance_m`. The detected obstacle is given `detected_radius_m`,
+# kept smaller than the static `obstacle.radius_m` because we only have a
+# short avoidance window after a late detection.
+bonus:
+  enabled: true
+  tof_topic: ""              # leave empty → "/<vehicle>/front_center_tof_driver_node/range"
+  detect_distance_m: 0.50    # ToF reads under this trigger a detection
+  detected_radius_m: 0.05    # smaller than obstacle.radius_m on purpose
+  sticky: true               # freeze the obstacle after the first valid hit
+  tof_offset_m: 0.05         # forward offset of ToF from robot centre
+

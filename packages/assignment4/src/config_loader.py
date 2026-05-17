@@ -122,6 +122,16 @@ class PathCfg:
 
 
 @dataclass(frozen=True)
+class Bonus:
+    enabled: bool
+    tof_topic: str
+    detect_distance_m: float
+    detected_radius_m: float
+    sticky: bool
+    tof_offset_m: float
+
+
+@dataclass(frozen=True)
 class Config:
     workspace: Workspace
     grid: Grid
@@ -134,6 +144,7 @@ class Config:
     control: Control
     viz: Viz
     path: PathCfg
+    bonus: Bonus
 
 
 def _build(raw: Dict[str, Any]) -> Config:
@@ -164,6 +175,18 @@ def _build(raw: Dict[str, Any]) -> Config:
         control=Control(**raw["control"]),
         viz=Viz(**raw["viz"]),
         path=PathCfg(**raw["path"]),
+        bonus=_build_bonus(raw.get("bonus", {})),
+    )
+
+
+def _build_bonus(raw: Dict[str, Any]) -> Bonus:
+    return Bonus(
+        enabled=bool(raw.get("enabled", False)),
+        tof_topic=str(raw.get("tof_topic", "")),
+        detect_distance_m=float(raw.get("detect_distance_m", 0.5)),
+        detected_radius_m=float(raw.get("detected_radius_m", 0.05)),
+        sticky=bool(raw.get("sticky", True)),
+        tof_offset_m=float(raw.get("tof_offset_m", 0.05)),
     )
 
 

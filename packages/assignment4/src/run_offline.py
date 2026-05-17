@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -62,16 +62,35 @@ def step_astar(cfg: Config, out_dir: Path) -> List[Point]:
     return waypoints
 
 
-def step_simulate(cfg: Config, waypoints: List[Point], obstacle: CircleObstacle,
-                  max_steps: int = 400) -> Tuple[List[Snapshot], dict]:
-    planner = DWAPlanner(cfg, obstacle, waypoints)
+def step_simulate(cfg: Config, waypoints: List[Point],
+                  obstacle: CircleObstacle,
+                  max_steps: int = 400,
+                  bonus: bool = False
+                  ) -> Tuple[List[Snapshot], dict]:
+    """Closed-loop A*+DWA simulation.
+
+    ``obstacle`` is the *true* obstacle in the world. In bonus mode the
+    planner starts blind to it; the obstacle is "detected" and handed to
+    the planner once the simulated forward ToF beam intersects it within
+    ``cfg.bonus.detect_distance_m``.
+    """
+    planner = DWAPlanner(cfg, None if bonus else obstacle, waypoints)
     state: State = (cfg.start.x, cfg.start.y, cfg.start.theta)
     trace: List[Point] = [(state[0], state[1])]
     snapshots: List[Snapshot] = []
     reached = False
     contact = False
+    detected: bool = not bonus
+    detected_obstacle: CircleObstacle | None = None if bonus else obstacle
 
     for step in range(max_steps):
+        if bonus and not detected:
+            det = _simulate_tof_detection(cfg, state, obstacle)
+            if det is not None:
+                planner.set_obstacle(det)
+                detected_obstacle = det
+                detected = True
+
         result: DWAResult = planner.step(state)
         snapshots.append(Snapshot(
             state=state,
@@ -79,7 +98,8 @@ def step_simulate(cfg: Config, waypoints: List[Point], obstacle: CircleObstacle,
             chosen=result.chosen,
             trace=list(trace),
             step=step,
-            info="",
+            info="(unknown obstacle)" if bonus and not detected else "",
+            obstacle=detected_obstacle,
         ))
         d_goal = math.hypot(state[0] - cfg.goal.x, state[1] - cfg.goal.y)
         if d_goal <= cfg.goal.tol_m:
@@ -109,15 +129,63 @@ def step_simulate(cfg: Config, waypoints: List[Point], obstacle: CircleObstacle,
     }
     print(f"[Sim] steps={summary['steps']}  reached={reached}  "
           f"contact={contact}  final d_goal={summary['final_d_goal']:.3f} m")
+    if bonus:
+        if detected_obstacle is not None:
+            print(f"[Sim] bonus: obstacle detected at "
+                  f"({detected_obstacle.cx:.2f}, {detected_obstacle.cy:.2f})  "
+                  f"r={detected_obstacle.radius:.3f} m  "
+                  f"(true centre ({obstacle.cx:.2f}, {obstacle.cy:.2f}))")
+        else:
+            print("[Sim] bonus: obstacle was never detected by simulated ToF")
+    summary["detected_obstacle"] = detected_obstacle
     return snapshots, summary
 
 
-def step_render(cfg: Config, waypoints: List[Point], obstacle: CircleObstacle,
+def _simulate_tof_detection(cfg: Config, state: State,
+                            truth: CircleObstacle) -> CircleObstacle | None:
+    """Simulate a forward ToF beam against the *true* obstacle.
+
+    Returns a detected obstacle (with bonus-radius, world-frame centre
+    estimated from the hit point) if the beam intersects the true circle
+    within ``cfg.bonus.detect_distance_m``. Otherwise None.
+    """
+    x, y, th = state
+    # ToF mounting point.
+    ox = x + cfg.bonus.tof_offset_m * math.cos(th)
+    oy = y + cfg.bonus.tof_offset_m * math.sin(th)
+    # Closest distance from truth centre to the beam line (perp distance).
+    dx = truth.cx - ox
+    dy = truth.cy - oy
+    proj = dx * math.cos(th) + dy * math.sin(th)  # along beam
+    perp_sq = dx * dx + dy * dy - proj * proj
+    if perp_sq > truth.radius * truth.radius or proj <= 0.0:
+        return None
+    # Ray-circle entry distance along the beam.
+    entry = proj - math.sqrt(max(0.0, truth.radius * truth.radius - perp_sq))
+    if entry <= 0.0 or entry > cfg.bonus.detect_distance_m:
+        return None
+    # Project the hit point and shift forward by detected_radius so the
+    # circle straddles the true obstacle instead of clipping its near face.
+    radius = cfg.bonus.detected_radius_m
+    d = cfg.bonus.tof_offset_m + entry + radius
+    cx = x + d * math.cos(th)
+    cy = y + d * math.sin(th)
+    return CircleObstacle(
+        cx=cx, cy=cy, radius=radius, inflation=cfg.robot.inflated_radius_m,
+    )
+
+
+def step_render(cfg: Config, waypoints: List[Point],
+                obstacle: Optional[CircleObstacle],
                 snapshots: List[Snapshot], out_dir: Path,
                 make_gif: bool = True) -> None:
     fig, ax = plt.subplots(figsize=(7, 7))
     fig.suptitle("Assignment 4 — A* + DWA local planner", fontsize=11)
     renderer = Renderer(cfg, waypoints, obstacle, ax=ax)
+    if obstacle is None:
+        # Bonus mode: show the YAML obstacle as a ghost so the truth is
+        # visible from frame 0 alongside the (later) detected circle.
+        renderer.set_truth_obstacle(CircleObstacle.from_config(cfg))
 
     # Always save the final frame as a still PNG.
     renderer.update(snapshots[-1])
@@ -156,25 +224,36 @@ def main() -> None:
                     help="skip animated GIF (still saves PNGs)")
     ap.add_argument("--max-steps", type=int, default=400,
                     help="simulation step cap")
+    ap.add_argument("--bonus", action="store_true",
+                    help="Task 5 bonus: obstacle is unknown until simulated "
+                         "ToF detects it; overrides bonus.enabled in YAML")
     args = ap.parse_args()
 
     cfg = load(args.config)
+    bonus = args.bonus or cfg.bonus.enabled
     out_dir = Path(__file__).resolve().parents[1] / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"config : {args.config}")
     print(f"output : {out_dir}")
+    print(f"bonus  : {bonus}")
     print()
     print("─── Task 1: A* global path ─────────────────────────────────")
     waypoints = step_astar(cfg, out_dir)
     print()
-    print("─── Tasks 2+3: DWA + obstacle avoidance ────────────────────")
+    section = ("Task 5 bonus: unknown obstacle + DWA"
+               if bonus else "Tasks 2+3: DWA + obstacle avoidance")
+    print(f"─── {section} ────")
     obstacle = CircleObstacle.from_config(cfg)
     snapshots, summary = step_simulate(cfg, waypoints, obstacle,
-                                       max_steps=args.max_steps)
+                                       max_steps=args.max_steps,
+                                       bonus=bonus)
     print()
     print("─── Task 4: visualisation ──────────────────────────────────")
-    step_render(cfg, waypoints, obstacle, snapshots, out_dir,
+    # In bonus mode the renderer must start blind; snapshots carry the
+    # detected obstacle and the renderer attaches it the first time it sees one.
+    initial_obstacle = None if bonus else obstacle
+    step_render(cfg, waypoints, initial_obstacle, snapshots, out_dir,
                 make_gif=not args.no_gif)
     print()
     print("done.")

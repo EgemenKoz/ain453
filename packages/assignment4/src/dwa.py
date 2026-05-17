@@ -94,15 +94,25 @@ def _goal_term(xs: np.ndarray, ys: np.ndarray, target: Point) -> float:
 # ── DWA core ────────────────────────────────────────────────────────────────
 
 class DWAPlanner:
-    """Stateful DWA planner. Holds the last commanded ω for rate-limiting."""
+    """Stateful DWA planner. Holds the last commanded ω for rate-limiting.
 
-    def __init__(self, cfg: Config, obstacle: CircleObstacle, path: Sequence[Point]):
+    The obstacle may be ``None`` (Task 5 bonus: unknown obstacle), in which
+    case the obstacle-related cost terms and collision rejection are skipped
+    until ``set_obstacle()`` is called at runtime.
+    """
+
+    def __init__(self, cfg: Config, obstacle: Optional[CircleObstacle],
+                 path: Sequence[Point]):
         self.cfg = cfg
         self.obstacle = obstacle
         self.path_xy = np.asarray(path, dtype=float)
         if self.path_xy.ndim != 2 or self.path_xy.shape[1] != 2:
             raise ValueError("path must be a sequence of (x, y) tuples")
         self._last_w: float = 0.0
+
+    def set_obstacle(self, obstacle: Optional[CircleObstacle]) -> None:
+        """Inject (or replace) the obstacle used by the planner."""
+        self.obstacle = obstacle
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -142,24 +152,36 @@ class DWAPlanner:
         d = self.cfg.dwa
         xs, ys = _rollout(state, v, w, d.horizon_s, d.dt)
 
+        # Hard reject if any rollout point leaves the workspace box.
+        # Keeps the robot inside the 1.5 × 1.5 m map (A4.md §2). The robot
+        # radius is subtracted from the bounds so the *footprint* stays in
+        # the map, not just the centre.
+        ws = self.cfg.workspace
+        r = self.cfg.robot.radius_m
+        if (xs.min() < ws.x_min + r or xs.max() > ws.x_max - r or
+                ys.min() < ws.y_min + r or ys.max() > ws.y_max - r):
+            return Rollout(v=v, w=w, xs=xs, ys=ys,
+                           cost=1e6, rejected=True, reason="out_of_bounds")
+
         # Hard reject if any rollout point enters the inflated obstacle.
-        if d.reject_in_inflated and self.obstacle.any_in_collision(zip(xs, ys)):
+        if (self.obstacle is not None and d.reject_in_inflated
+                and self.obstacle.any_in_collision(zip(xs, ys))):
             return Rollout(v=v, w=w, xs=xs, ys=ys,
                            cost=1e6, rejected=True, reason="obstacle")
 
         path_d = _path_distance_term(xs, ys, self.path_xy)
         goal_d = _goal_term(xs, ys, (self.cfg.goal.x, self.cfg.goal.y))
 
-        # Soft obstacle term: only when the robot is within sensing range.
-        # Ramps from 0 (clearance ≥ safe) to 1 (touching the inflated edge).
-        rx, ry, _ = state
-        sense_dist = math.hypot(rx - self.obstacle.cx, ry - self.obstacle.cy)
-        if sense_dist <= self.cfg.sensing.radius_m + self.obstacle.inflated_radius:
-            min_clear = self.obstacle.min_clearance(zip(xs, ys))
-            safe = max(1e-3, d.safe_clear_m)
-            obs_cost = max(0.0, (safe - min_clear) / safe)
-        else:
-            obs_cost = 0.0
+        obs_cost = 0.0
+        if self.obstacle is not None:
+            # Soft obstacle term: only when the robot is within sensing range.
+            # Ramps from 0 (clearance ≥ safe) to 1 (touching the inflated edge).
+            rx, ry, _ = state
+            sense_dist = math.hypot(rx - self.obstacle.cx, ry - self.obstacle.cy)
+            if sense_dist <= self.cfg.sensing.radius_m + self.obstacle.inflated_radius:
+                min_clear = self.obstacle.min_clearance(zip(xs, ys))
+                safe = max(1e-3, d.safe_clear_m)
+                obs_cost = max(0.0, (safe - min_clear) / safe)
 
         wts = d.weights
         cost = (wts.path     * path_d +

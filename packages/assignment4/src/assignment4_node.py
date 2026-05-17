@@ -48,6 +48,7 @@ from config_loader import Config, default_path, load
 from costmap import CircleObstacle
 from dwa import DWAPlanner, DWAResult, Rollout
 from pose_source import PoseSource
+from tof_detector import TofObstacleDetector
 from viz import Renderer, Snapshot
 
 State = Tuple[float, float, float]
@@ -78,12 +79,29 @@ class Assignment4Node(DTROS):
             "[A4] A*: %d dense waypoints, length %.3f m",
             len(self._waypoints), path_length(self._waypoints),
         )
-        self._obstacle = CircleObstacle.from_config(self.cfg)
-        rospy.loginfo(
-            "[A4] Obstacle at (%.2f, %.2f)  r=%.3f m  inflated=%.3f m",
-            self._obstacle.cx, self._obstacle.cy,
-            self._obstacle.radius, self._obstacle.inflated_radius,
-        )
+
+        # Bonus (Task 5): obstacle starts unknown; detector publishes it after
+        # the ToF sensor sees something.
+        self._bonus = self.cfg.bonus.enabled
+        if self._bonus:
+            self._obstacle: Optional[CircleObstacle] = None
+            self._tof: Optional[TofObstacleDetector] = TofObstacleDetector(
+                self.cfg, self._vehicle,
+            )
+            rospy.loginfo(
+                "[A4] Bonus mode ON: obstacle unknown, ToF detector active "
+                "(trigger ≤ %.2f m, radius %.2f m)",
+                self.cfg.bonus.detect_distance_m,
+                self.cfg.bonus.detected_radius_m,
+            )
+        else:
+            self._obstacle = CircleObstacle.from_config(self.cfg)
+            self._tof = None
+            rospy.loginfo(
+                "[A4] Obstacle at (%.2f, %.2f)  r=%.3f m  inflated=%.3f m",
+                self._obstacle.cx, self._obstacle.cy,
+                self._obstacle.radius, self._obstacle.inflated_radius,
+            )
 
         self._planner = DWAPlanner(self.cfg, self._obstacle, self._waypoints)
         self._pose_src = PoseSource(
@@ -100,6 +118,11 @@ class Assignment4Node(DTROS):
         self._renderer.fig.suptitle(
             "Assignment 4 — A* + DWA local planner", fontsize=11,
         )
+        # Bonus mode: planner is blind to the obstacle until ToF fires, but
+        # the user should still see where it is in the viz. Use the YAML
+        # obstacle as a ghost outline reference.
+        if self._bonus:
+            self._renderer.set_truth_obstacle(CircleObstacle.from_config(self.cfg))
 
         self._cmd_pub = rospy.Publisher(
             f"{prefix}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1,
@@ -149,6 +172,15 @@ class Assignment4Node(DTROS):
                 "[A4] First pose received: (%.3f, %.3f, %.1f°). Running.",
                 pose[0], pose[1], math.degrees(pose[2]),
             )
+
+        # Bonus: if a ToF detection just arrived, attach it to the planner
+        # (and renderer) so the next rollout already sees the obstacle.
+        if self._bonus and self._obstacle is None and self._tof is not None:
+            det = self._tof.latest_detection(pose)
+            if det is not None:
+                self._obstacle = det
+                self._planner.set_obstacle(det)
+                self._renderer.set_obstacle(det)
 
         x, y, _ = pose
         d_goal = math.hypot(x - self.cfg.goal.x, y - self.cfg.goal.y)
