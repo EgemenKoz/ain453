@@ -74,20 +74,22 @@ def step_simulate(cfg: Config, waypoints: List[Point],
     the planner once the simulated forward ToF beam intersects it within
     ``cfg.bonus.detect_distance_m``.
     """
-    planner = DWAPlanner(cfg, None if bonus else obstacle, waypoints)
+    # Static obstacle is always active. In bonus mode a second obstacle is
+    # appended once the simulated ToF beam hits the true circle.
+    planner = DWAPlanner(cfg, obstacle, waypoints)
     state: State = (cfg.start.x, cfg.start.y, cfg.start.theta)
     trace: List[Point] = [(state[0], state[1])]
     snapshots: List[Snapshot] = []
     reached = False
     contact = False
-    detected: bool = not bonus
-    detected_obstacle: CircleObstacle | None = None if bonus else obstacle
+    detected: bool = False  # ToF detection (bonus only)
+    detected_obstacle: CircleObstacle | None = None
 
     for step in range(max_steps):
         if bonus and not detected:
             det = _simulate_tof_detection(cfg, state, obstacle)
             if det is not None:
-                planner.set_obstacle(det)
+                planner.add_obstacle(det)  # static obstacle stays; ToF obs added
                 detected_obstacle = det
                 detected = True
 
@@ -176,16 +178,12 @@ def _simulate_tof_detection(cfg: Config, state: State,
 
 
 def step_render(cfg: Config, waypoints: List[Point],
-                obstacle: Optional[CircleObstacle],
+                obstacle: CircleObstacle,
                 snapshots: List[Snapshot], out_dir: Path,
                 make_gif: bool = True) -> None:
     fig, ax = plt.subplots(figsize=(7, 7))
     fig.suptitle("Assignment 4 — A* + DWA local planner", fontsize=11)
     renderer = Renderer(cfg, waypoints, obstacle, ax=ax)
-    if obstacle is None:
-        # Bonus mode: show the YAML obstacle as a ghost so the truth is
-        # visible from frame 0 alongside the (later) detected circle.
-        renderer.set_truth_obstacle(CircleObstacle.from_config(cfg))
 
     # Always save the final frame as a still PNG.
     renderer.update(snapshots[-1])
@@ -250,10 +248,9 @@ def main() -> None:
                                        bonus=bonus)
     print()
     print("─── Task 4: visualisation ──────────────────────────────────")
-    # In bonus mode the renderer must start blind; snapshots carry the
-    # detected obstacle and the renderer attaches it the first time it sees one.
-    initial_obstacle = None if bonus else obstacle
-    step_render(cfg, waypoints, initial_obstacle, snapshots, out_dir,
+    # Static obstacle is always visible from frame 0. In bonus mode the
+    # ToF-detected second obstacle appears via snap.obstacle in the animation.
+    step_render(cfg, waypoints, obstacle, snapshots, out_dir,
                 make_gif=not args.no_gif)
     print()
     print("done.")

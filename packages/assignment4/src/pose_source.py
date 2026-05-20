@@ -18,7 +18,7 @@ World-frame update on each new tick (either wheel):
     Δs_left  = (ticks_left  − ticks_left_prev)  / N · 2π · R
     Δs_right = (ticks_right − ticks_right_prev) / N · 2π · R
     Δs       = (Δs_left + Δs_right) / 2
-    Δθ       = (Δs_right − Δs_left) / L
+    Δθ       = (Δs_left − Δs_right) / L   # see _fuse_locked: yaw inverted on this hardware
     x  += Δs · cos(θ + Δθ/2)
     y  += Δs · sin(θ + Δθ/2)
     θ  += Δθ
@@ -169,7 +169,11 @@ class PoseSource:
         self._right_at_last_fuse = self._right.distance
 
         d_s = 0.5 * (d_left + d_right)
-        d_th = (d_right - d_left) / self._wheel_base
+        # left − right (not the textbook right − left): on this Duckiebot the
+        # wheel encoders are assigned such that the standard convention yields
+        # an inverted yaw, so a physical left turn would integrate as a right
+        # turn. Forward/back motion (d_s) is unaffected by this choice.
+        d_th = (d_left - d_right) / self._wheel_base
         # Mid-point integration for better accuracy on curves.
         th_mid = self._theta + 0.5 * d_th
         self._x += d_s * math.cos(th_mid)

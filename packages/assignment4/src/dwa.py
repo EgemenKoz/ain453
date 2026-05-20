@@ -96,23 +96,27 @@ def _goal_term(xs: np.ndarray, ys: np.ndarray, target: Point) -> float:
 class DWAPlanner:
     """Stateful DWA planner. Holds the last commanded ω for rate-limiting.
 
-    The obstacle may be ``None`` (Task 5 bonus: unknown obstacle), in which
-    case the obstacle-related cost terms and collision rejection are skipped
-    until ``set_obstacle()`` is called at runtime.
+    Supports multiple simultaneous obstacles. In bonus mode the static
+    obstacle is always active; the ToF-detected obstacle is appended via
+    ``add_obstacle()`` once detected.
     """
 
     def __init__(self, cfg: Config, obstacle: Optional[CircleObstacle],
                  path: Sequence[Point]):
         self.cfg = cfg
-        self.obstacle = obstacle
+        self.obstacles: List[CircleObstacle] = [obstacle] if obstacle is not None else []
         self.path_xy = np.asarray(path, dtype=float)
         if self.path_xy.ndim != 2 or self.path_xy.shape[1] != 2:
             raise ValueError("path must be a sequence of (x, y) tuples")
         self._last_w: float = 0.0
 
     def set_obstacle(self, obstacle: Optional[CircleObstacle]) -> None:
-        """Inject (or replace) the obstacle used by the planner."""
-        self.obstacle = obstacle
+        """Replace the obstacle list with a single obstacle (or clear it)."""
+        self.obstacles = [obstacle] if obstacle is not None else []
+
+    def add_obstacle(self, obstacle: CircleObstacle) -> None:
+        """Append an additional obstacle (e.g., a ToF detection in bonus mode)."""
+        self.obstacles.append(obstacle)
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -163,25 +167,28 @@ class DWAPlanner:
             return Rollout(v=v, w=w, xs=xs, ys=ys,
                            cost=1e6, rejected=True, reason="out_of_bounds")
 
-        # Hard reject if any rollout point enters the inflated obstacle.
-        if (self.obstacle is not None and d.reject_in_inflated
-                and self.obstacle.any_in_collision(zip(xs, ys))):
-            return Rollout(v=v, w=w, xs=xs, ys=ys,
-                           cost=1e6, rejected=True, reason="obstacle")
+        points = list(zip(xs, ys))  # materialise once for multi-obstacle checks
+
+        # Hard reject if any rollout point enters any inflated obstacle.
+        if d.reject_in_inflated:
+            for obs in self.obstacles:
+                if obs.any_in_collision(points):
+                    return Rollout(v=v, w=w, xs=xs, ys=ys,
+                                   cost=1e6, rejected=True, reason="obstacle")
 
         path_d = _path_distance_term(xs, ys, self.path_xy)
         goal_d = _goal_term(xs, ys, (self.cfg.goal.x, self.cfg.goal.y))
 
         obs_cost = 0.0
-        if self.obstacle is not None:
+        rx, ry, _ = state
+        for obs in self.obstacles:
             # Soft obstacle term: only when the robot is within sensing range.
             # Ramps from 0 (clearance ≥ safe) to 1 (touching the inflated edge).
-            rx, ry, _ = state
-            sense_dist = math.hypot(rx - self.obstacle.cx, ry - self.obstacle.cy)
-            if sense_dist <= self.cfg.sensing.radius_m + self.obstacle.inflated_radius:
-                min_clear = self.obstacle.min_clearance(zip(xs, ys))
+            sense_dist = math.hypot(rx - obs.cx, ry - obs.cy)
+            if sense_dist <= self.cfg.sensing.radius_m + obs.inflated_radius:
+                min_clear = obs.min_clearance(points)
                 safe = max(1e-3, d.safe_clear_m)
-                obs_cost = max(0.0, (safe - min_clear) / safe)
+                obs_cost = max(obs_cost, max(0.0, (safe - min_clear) / safe))
 
         wts = d.weights
         cost = (wts.path     * path_d +

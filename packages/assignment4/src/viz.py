@@ -73,14 +73,14 @@ class Renderer:
             self.ax = ax
             self.fig = ax.figure
 
-        self._obstacle_patch: Optional[Circle] = None
-        self._inflated_patch: Optional[Circle] = None
+        self._obstacle_patches: List[Tuple[Circle, Circle]] = []
         self._truth_patch: Optional[Circle] = None
+        self._tof_obstacle_drawn: bool = False
 
         self._draw_static()
         self._init_dynamic()
-        if self.obstacle is not None:
-            self.set_obstacle(self.obstacle)
+        if obstacle is not None:
+            self._draw_obstacle(obstacle, label=True)
 
     # ── construction ────────────────────────────────────────────────────────
 
@@ -161,31 +161,34 @@ class Renderer:
 
         ax.legend(loc="lower right", fontsize=8, framealpha=0.9)
 
-    # ── obstacle (re)attachment ────────────────────────────────────────────
+    # ── obstacle drawing ───────────────────────────────────────────────────
 
-    def set_obstacle(self, obstacle: CircleObstacle) -> None:
-        """Add or replace the obstacle drawing.
-
-        Used in Task 5 bonus, where the obstacle only appears after the ToF
-        sensor detects it.
-        """
-        self.obstacle = obstacle
-        if self._obstacle_patch is not None:
-            self._obstacle_patch.remove()
-        if self._inflated_patch is not None:
-            self._inflated_patch.remove()
-        self._obstacle_patch = Circle(
+    def _draw_obstacle(self, obstacle: CircleObstacle, label: bool = True) -> None:
+        """Append one obstacle circle + inflated boundary to the axes."""
+        fill_p = Circle(
             (obstacle.cx, obstacle.cy), obstacle.radius,
-            color="black", alpha=0.85, label="obstacle", zorder=3,
+            color="black", alpha=0.85,
+            label="obstacle" if label else None, zorder=3,
         )
-        self._inflated_patch = Circle(
+        dash_p = Circle(
             (obstacle.cx, obstacle.cy), obstacle.inflated_radius,
             fill=False, color="black", linestyle="--",
-            label="inflated boundary", zorder=3,
+            label="inflated boundary" if label else None, zorder=3,
         )
-        self.ax.add_patch(self._obstacle_patch)
-        self.ax.add_patch(self._inflated_patch)
+        self.ax.add_patch(fill_p)
+        self.ax.add_patch(dash_p)
+        self._obstacle_patches.append((fill_p, dash_p))
         self.ax.legend(loc="lower right", fontsize=8, framealpha=0.9)
+
+    def set_obstacle(self, obstacle: CircleObstacle) -> None:
+        """Add a new obstacle to the view (e.g., a ToF detection in bonus mode).
+
+        Never removes previously drawn obstacles — both the static and the
+        detected obstacle are kept visible simultaneously.
+        """
+        self.obstacle = obstacle
+        label_first = (len(self._obstacle_patches) == 0)
+        self._draw_obstacle(obstacle, label=label_first)
 
     def set_truth_obstacle(self, obstacle: CircleObstacle) -> None:
         """Always-visible reference circle for the (test scenario) truth.
@@ -206,9 +209,10 @@ class Renderer:
     # ── per-frame update ───────────────────────────────────────────────────
 
     def update(self, snap: Snapshot) -> None:
-        # Attach the obstacle the first time a snapshot carries one
-        # (Task 5: shows the obstacle "appearing" at detection time).
-        if snap.obstacle is not None and self._obstacle_patch is None:
+        # Attach the ToF-detected obstacle the first time a snapshot carries
+        # one (Task 5: shows the second obstacle appearing at detection time).
+        if snap.obstacle is not None and not self._tof_obstacle_drawn:
+            self._tof_obstacle_drawn = True
             self.set_obstacle(snap.obstacle)
         x, y, th = snap.state
 

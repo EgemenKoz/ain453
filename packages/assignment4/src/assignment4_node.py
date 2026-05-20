@@ -80,30 +80,31 @@ class Assignment4Node(DTROS):
             len(self._waypoints), path_length(self._waypoints),
         )
 
-        # Bonus (Task 5): obstacle starts unknown; detector publishes it after
-        # the ToF sensor sees something.
+        static_obs = CircleObstacle.from_config(self.cfg)
+        rospy.loginfo(
+            "[A4] Static obstacle at (%.2f, %.2f)  r=%.3f m  inflated=%.3f m",
+            static_obs.cx, static_obs.cy,
+            static_obs.radius, static_obs.inflated_radius,
+        )
+
+        # Bonus (Task 5): static obstacle is always active; a second obstacle
+        # is appended once the ToF sensor detects something at runtime.
         self._bonus = self.cfg.bonus.enabled
+        self._tof_detected: bool = False
         if self._bonus:
-            self._obstacle: Optional[CircleObstacle] = None
             self._tof: Optional[TofObstacleDetector] = TofObstacleDetector(
                 self.cfg, self._vehicle,
             )
             rospy.loginfo(
-                "[A4] Bonus mode ON: obstacle unknown, ToF detector active "
-                "(trigger ≤ %.2f m, radius %.2f m)",
+                "[A4] Bonus mode ON: static obstacle active + ToF detector armed "
+                "(trigger ≤ %.2f m, detected radius %.2f m)",
                 self.cfg.bonus.detect_distance_m,
                 self.cfg.bonus.detected_radius_m,
             )
         else:
-            self._obstacle = CircleObstacle.from_config(self.cfg)
             self._tof = None
-            rospy.loginfo(
-                "[A4] Obstacle at (%.2f, %.2f)  r=%.3f m  inflated=%.3f m",
-                self._obstacle.cx, self._obstacle.cy,
-                self._obstacle.radius, self._obstacle.inflated_radius,
-            )
 
-        self._planner = DWAPlanner(self.cfg, self._obstacle, self._waypoints)
+        self._planner = DWAPlanner(self.cfg, static_obs, self._waypoints)
         self._pose_src = PoseSource(
             self._vehicle,
             (self.cfg.start.x, self.cfg.start.y, self.cfg.start.theta),
@@ -114,15 +115,10 @@ class Assignment4Node(DTROS):
             right_sign=self.cfg.robot.right_sign,
             log_throttle_s=self.cfg.robot.pose_log_throttle_s,
         )
-        self._renderer = Renderer(self.cfg, self._waypoints, self._obstacle)
+        self._renderer = Renderer(self.cfg, self._waypoints, static_obs)
         self._renderer.fig.suptitle(
             "Assignment 4 — A* + DWA local planner", fontsize=11,
         )
-        # Bonus mode: planner is blind to the obstacle until ToF fires, but
-        # the user should still see where it is in the viz. Use the YAML
-        # obstacle as a ghost outline reference.
-        if self._bonus:
-            self._renderer.set_truth_obstacle(CircleObstacle.from_config(self.cfg))
 
         self._cmd_pub = rospy.Publisher(
             f"{prefix}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1,
@@ -173,14 +169,18 @@ class Assignment4Node(DTROS):
                 pose[0], pose[1], math.degrees(pose[2]),
             )
 
-        # Bonus: if a ToF detection just arrived, attach it to the planner
-        # (and renderer) so the next rollout already sees the obstacle.
-        if self._bonus and self._obstacle is None and self._tof is not None:
+        # Bonus: if a ToF detection just arrived, add it alongside the static
+        # obstacle so the planner and renderer avoid both simultaneously.
+        if self._bonus and not self._tof_detected and self._tof is not None:
             det = self._tof.latest_detection(pose)
             if det is not None:
-                self._obstacle = det
-                self._planner.set_obstacle(det)
+                self._tof_detected = True
+                self._planner.add_obstacle(det)
                 self._renderer.set_obstacle(det)
+                rospy.loginfo(
+                    "[A4-bonus] ToF obstacle added at (%.2f, %.2f)  r=%.3f m",
+                    det.cx, det.cy, det.radius,
+                )
 
         x, y, _ = pose
         d_goal = math.hypot(x - self.cfg.goal.x, y - self.cfg.goal.y)
