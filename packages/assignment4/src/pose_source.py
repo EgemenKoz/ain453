@@ -169,11 +169,11 @@ class PoseSource:
         self._right_at_last_fuse = self._right.distance
 
         d_s = 0.5 * (d_left + d_right)
-        # left − right (not the textbook right − left): on this Duckiebot the
-        # wheel encoders are assigned such that the standard convention yields
-        # an inverted yaw, so a physical left turn would integrate as a right
-        # turn. Forward/back motion (d_s) is unaffected by this choice.
-        d_th = (d_left - d_right) / self._wheel_base
+        # Textbook differential-drive yaw: right wheel ahead → CCW (left) turn
+        # → positive yaw. The earlier (d_left − d_right) variant inverted this,
+        # which rendered every turn mirrored on the map and put a sign error in
+        # the yaw feedback (the controller fought itself, causing loops).
+        d_th = (d_right - d_left) / self._wheel_base
         # Mid-point integration for better accuracy on curves.
         th_mid = self._theta + 0.5 * d_th
         self._x += d_s * math.cos(th_mid)
